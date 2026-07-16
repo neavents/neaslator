@@ -1,0 +1,69 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+.vs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+bld/
+[Oo]ut/
+msbuild.log
+msbuild.err
+msbuild.wrn
+*.nupkg
+*.snupkg
+**/packages/*
+
+# NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+*.pyc
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+*.swp
+*~
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Coverage / Test Results
+coverage/
+coverage-baseline/
+coverage-final/
+coverage-incremental/
+coverage-report/
+TestResults/
+*.cobertura.xml
+StrykerOutput/
+
+# Environment
+.env
+.env.*
+*.env
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
+
+# Docker
+*.pid
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
