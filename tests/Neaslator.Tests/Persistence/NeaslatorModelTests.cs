@@ -84,4 +84,17 @@ public sealed class NeaslatorModelTests
         menuId.GetValueConverter().Should().BeOfType<UlidToGuidConverter>();
         menuId.GetValueConverter()!.ProviderClrType.Should().Be(typeof(Guid));
     }
+
+    [Fact]
+    public void Model_HasNoPendingChangesNotCapturedInAMigration()
+    {
+        // Guards against the classic "changed the model but forgot to add a migration".
+        DbContextOptions<NeaslatorDbContext> options = new DbContextOptionsBuilder<NeaslatorDbContext>()
+            .UseNpgsql("Host=localhost;Database=model_only;Username=x;Password=x")
+            .Options;
+        using var ctx = new NeaslatorDbContext(options);
+
+        ctx.Database.HasPendingModelChanges().Should().BeFalse(
+            "the EF model must match the latest migration snapshot");
+    }
 }
