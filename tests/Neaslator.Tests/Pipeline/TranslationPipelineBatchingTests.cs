@@ -208,6 +208,33 @@ public sealed class TranslationPipelineBatchingTests : IDisposable
     }
 
     [Fact]
+    public async Task StoreFailsMidBatch_AlreadyStoredEntriesPersist_LanguageMarkedFailed()
+    {
+        // Data-loss safety: if persisting one translation throws, the ones already written must
+        // stay written (so a retry hits cache for them), and only the language is marked failed.
+        await SeedLanguages("fr");
+        AllMisses();
+        RouterSucceedsEchoing();
+
+        long firstHash = HashOf("Item 0");
+        long secondHash = HashOf("Item 1");
+
+        _cache.When(c => c.StoreAsync(secondHash, Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<string>(), Arg.Any<TranslationProviderTier>(), Arg.Any<string>(), Arg.Any<float>(), Arg.Any<CancellationToken>()))
+            .Do(_ => throw new InvalidOperationException("store backend unavailable"));
+
+        TranslationPipelineResult result = await _pipeline.ExecuteAsync(
+            MenuWithItems(2), null, "en", "Restaurant", "Italian", CancellationToken.None);
+
+        // The first translation was persisted before the failure.
+        await _cache.Received(1).StoreAsync(firstHash, "Item 0", "en", "fr", $"t-{firstHash}",
+            Arg.Any<TranslationProviderTier>(), Arg.Any<string>(), Arg.Any<float>(), Arg.Any<CancellationToken>());
+        // The language is reported failed (so it will be retried, not silently dropped).
+        result.FailedLanguages.Should().Be(1);
+        result.Results.Should().Contain(r => r.TargetLanguageCode == "fr" && !r.IsSuccess);
+    }
+
+    [Fact]
     public async Task PartialCachePerLanguage_OnlyMissedUnitsSentToProvider()
     {
         await SeedLanguages("fr");

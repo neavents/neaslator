@@ -51,7 +51,22 @@ public sealed class TranslationCache : ITranslationCache
         {
             if (values[i].HasValue)
             {
-                CachedTranslation? cached = JsonSerializer.Deserialize<CachedTranslation>((string)values[i]!);
+                CachedTranslation? cached = null;
+                try
+                {
+                    cached = JsonSerializer.Deserialize<CachedTranslation>((string)values[i]!);
+                }
+                catch (JsonException)
+                {
+                    // A poisoned/corrupt L1 value must not break the lookup — L2 (Postgres) is
+                    // authoritative, so degrade to an L1 miss and fall through.
+                    activity?.AddEvent(new ActivityEvent("l1_corrupt_value_skipped",
+                        tags: new ActivityTagsCollection([
+                            new("target_language", targetLanguageCodes[i]),
+                            new("source_hash", sourceHash)
+                        ])));
+                }
+
                 if (cached is not null &&
                     cached.NormalizedSourceText.Equals(normalizedSourceText, StringComparison.Ordinal))
                 {

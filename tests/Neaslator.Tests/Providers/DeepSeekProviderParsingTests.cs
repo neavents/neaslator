@@ -192,6 +192,39 @@ public sealed class DeepSeekProviderParsingTests
         result.ErrorMessage.Should().Contain("Empty translated_name");
     }
 
+    [Fact]
+    public async Task OutOfOrderTranslations_MappedByHashNotPosition()
+    {
+        // The LLM returns the three items in reverse order; each translation carries its own
+        // hash, so the result must stay bound to the right source unit regardless of position.
+        string content = """
+        [{"hash":102,"translated_name":"C"},{"hash":100,"translated_name":"A"},{"hash":101,"translated_name":"B"}]
+        """;
+        var provider = CreateProvider(content);
+
+        var result = await provider.TranslateBatchAsync(Request(100, 101, 102), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Translations.Should().Contain(t => t.SourceHash == 100 && t.TranslatedName == "A");
+        result.Translations.Should().Contain(t => t.SourceHash == 101 && t.TranslatedName == "B");
+        result.Translations.Should().Contain(t => t.SourceHash == 102 && t.TranslatedName == "C");
+    }
+
+    [Fact]
+    public async Task NegativeAndBoundaryHashes_RoundTripExactly()
+    {
+        // Hashes are Int64 reinterpreted from XxHash3 and are frequently negative; JSON number
+        // handling must not lose or truncate them.
+        long[] hashes = [long.MinValue, -1L, 0L, long.MaxValue];
+        string items = string.Join(",", hashes.Select(h => $"{{\"hash\":{h},\"translated_name\":\"n{h}\"}}"));
+        var provider = CreateProvider($"[{items}]");
+
+        var result = await provider.TranslateBatchAsync(Request(hashes), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Translations.Select(t => t.SourceHash).Should().BeEquivalentTo(hashes);
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _status;
