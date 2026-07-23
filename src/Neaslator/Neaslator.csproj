@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Neaslator.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../../neavents-messaging-contracts/src/Neavents.Messaging.Contracts/Neavents.Messaging.Contracts.csproj" />
   </ItemGroup>
 

@@ -40,7 +40,7 @@ public sealed class QualityUpgradeJob : BackgroundService
         }
     }
 
-    private async Task UpgradeDegradedEntries(CancellationToken ct)
+    internal async Task UpgradeDegradedEntries(CancellationToken ct)
     {
         using Activity? activity = NeaslatorActivitySources.QualityUpgrade.StartActivity("QualityUpgradeJob.Run");
         long startTicks = Stopwatch.GetTimestamp();
