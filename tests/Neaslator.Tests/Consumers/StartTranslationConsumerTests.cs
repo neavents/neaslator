@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using MassTransit;
 using MassTransit.Testing;
@@ -204,6 +205,64 @@ public sealed class StartTranslationConsumerTests
             evt.FailedLanguages.Should().Be(1);
             evt.FailedLanguageCodes.Should().ContainSingle().And.Contain("de");
             evt.TranslatedMenus.Should().ContainSingle(m => m.LanguageCode == "fr");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ExistingSnapshotIdenticalToCurrent_NoChanges_UpdatesInPlaceAndReportsZero()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid sectionId = Ulid.NewUlid();
+        Ulid itemId = Ulid.NewUlid();
+        MenuSnapshot snapshot = SingleItemSnapshot(sectionId, itemId);
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<CancellationToken>()).Returns(snapshot);
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-nochange-{menuId}");
+        await SeedLanguages(provider, "fr", "de");
+
+        // Pre-existing snapshot identical to the current one -> diff is empty.
+        DateTimeOffset seededAt = DateTimeOffset.UtcNow.AddDays(-1);
+        using (IServiceScope seed = provider.CreateScope())
+        {
+            NeaslatorDbContext seedDb = seed.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            seedDb.MenuPublishSnapshots.Add(new MenuPublishSnapshot
+            {
+                MenuId = menuId,
+                OwnerId = ownerId,
+                SnapshotJson = JsonSerializer.Serialize(snapshot),
+                PublishedAt = seededAt
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId));
+
+            (await harness.Consumed.Any<StartTranslationCommand>()).Should().BeTrue();
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            MenuTranslationCompletedEvent evt = harness.Published.Select<MenuTranslationCompletedEvent>().First().Context.Message;
+            evt.TotalLanguages.Should().Be(0, "an identical snapshot yields no diff");
+            evt.CompletedLanguages.Should().Be(0);
+            evt.FailedLanguages.Should().Be(0);
+            evt.TranslatedMenus.Should().BeEmpty();
+
+            // The existing row is updated in place (not duplicated) and its timestamp advances.
+            using IServiceScope scope = provider.CreateScope();
+            NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            List<MenuPublishSnapshot> rows = await db.MenuPublishSnapshots.Where(s => s.MenuId == menuId).ToListAsync();
+            rows.Should().ContainSingle();
+            rows[0].PublishedAt.Should().BeAfter(seededAt);
         }
         finally
         {
