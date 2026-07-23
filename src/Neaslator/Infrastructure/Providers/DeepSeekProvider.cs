@@ -187,10 +187,27 @@ public sealed class DeepSeekProvider : ITranslationProvider
         }
 
         HashSet<long> expectedHashes = new(request.Items.Select(i => i.SourceHash));
+        HashSet<long> seenHashes = new(items.Count);
         List<TranslatedUnit> translations = new(items.Count);
 
         foreach (LlmTranslatedItem item in items)
         {
+            if (!seenHashes.Add(item.Hash))
+            {
+                string errorMsg = $"Duplicate hash {item.Hash} in response";
+                activity?.SetStatus(ActivityStatusCode.Error, errorMsg);
+                activity?.AddEvent(new ActivityEvent("duplicate_hash",
+                    tags: new ActivityTagsCollection([new("hash", item.Hash)])));
+                return new TranslationBatchResult
+                {
+                    IsSuccess = false,
+                    Translations = [],
+                    TokenUsage = tokenUsage,
+                    ErrorMessage = errorMsg,
+                    Latency = sw.Elapsed
+                };
+            }
+
             if (!expectedHashes.Contains(item.Hash))
             {
                 string errorMsg = $"Unexpected hash {item.Hash} in response";

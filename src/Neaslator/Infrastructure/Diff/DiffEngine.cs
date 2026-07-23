@@ -155,6 +155,8 @@ public static class DiffEngine
     private static void AddDescriptionUnit(List<TranslationUnit> units, ItemSnapshot item, Ulid sectionId)
     {
         string normalized = TextNormalizer.Normalize((item.Description ?? "").AsSpan());
+        if (normalized.Length == 0)
+            return;
         units.Add(new TranslationUnit
         {
             SourceHash = TranslationHasher.ComputeHash(normalized),
@@ -189,6 +191,8 @@ public static class DiffEngine
     private static void AddSubItemDescriptionUnit(List<TranslationUnit> units, SubItemSnapshot subItem, Ulid sectionId)
     {
         string normalized = TextNormalizer.Normalize((subItem.Description ?? "").AsSpan());
+        if (normalized.Length == 0)
+            return;
         units.Add(new TranslationUnit
         {
             SourceHash = TranslationHasher.ComputeHash(normalized),
