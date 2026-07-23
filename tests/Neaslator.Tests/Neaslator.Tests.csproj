@@ -13,6 +13,7 @@
     <PackageReference Include="AutoFixture.AutoNSubstitute" />
     <PackageReference Include="AutoFixture.Xunit2" />
     <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="MassTransit.TestFramework" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
