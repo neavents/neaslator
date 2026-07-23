@@ -7,27 +7,30 @@ public static class TranslationStatusEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/api/v1/translate/menu/{menuId}/status", async (string menuId, NeaslatorDbContext db, CancellationToken ct) =>
-        {
-            if (!Ulid.TryParse(menuId, out Ulid parsedMenuId))
-                return Results.BadRequest(new { error = "Invalid menu ID format" });
+        group.MapGet("/api/v1/translate/menu/{menuId}/status",
+            (string menuId, NeaslatorDbContext db, CancellationToken ct) => HandleAsync(menuId, db, ct));
+    }
 
-            var snapshot = await db.MenuPublishSnapshots
-                .Where(s => s.MenuId == parsedMenuId)
-                .Select(s => new
-                {
-                    s.MenuId,
-                    s.OwnerId,
-                    s.PublishedAt,
-                    HasSnapshot = true
-                })
-                .AsNoTracking()
-                .FirstOrDefaultAsync(ct);
+    internal static async Task<IResult> HandleAsync(string menuId, NeaslatorDbContext db, CancellationToken ct)
+    {
+        if (!Ulid.TryParse(menuId, out Ulid parsedMenuId))
+            return Results.BadRequest(new { error = "Invalid menu ID format" });
 
-            if (snapshot is null)
-                return Results.NotFound(new { error = "No translation history for this menu" });
+        var snapshot = await db.MenuPublishSnapshots
+            .Where(s => s.MenuId == parsedMenuId)
+            .Select(s => new
+            {
+                s.MenuId,
+                s.OwnerId,
+                s.PublishedAt,
+                HasSnapshot = true
+            })
+            .AsNoTracking()
+            .FirstOrDefaultAsync(ct);
 
-            return Results.Ok(snapshot);
-        });
+        if (snapshot is null)
+            return Results.NotFound(new { error = "No translation history for this menu" });
+
+        return Results.Ok(snapshot);
     }
 }
