@@ -29,20 +29,23 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
 
         return new MenuSnapshot
         {
-            Sections = menuData.Sections.Select(s => new SectionSnapshot
+            // Collections are null-coalesced: System.Text.Json overwrites the record's
+            // default initializer when the JSON contains an explicit null, so an upstream
+            // "sections": null (or null items/subItems) must not crash the consumer.
+            Sections = (menuData.Sections ?? []).Select(s => new SectionSnapshot
             {
                 Id = s.Id,
                 Name = s.Name,
                 DoNotTranslateName = s.DoNotTranslateName,
                 DoNotTranslateDescription = s.DoNotTranslateDescription,
-                Items = s.Items.Select(i => new ItemSnapshot
+                Items = (s.Items ?? []).Select(i => new ItemSnapshot
                 {
                     Id = i.Id,
                     Name = i.Name,
                     Description = i.Description,
                     DoNotTranslateName = i.DoNotTranslateName,
                     DoNotTranslateDescription = i.DoNotTranslateDescription,
-                    SubItems = i.SubItems.Select(si => new SubItemSnapshot
+                    SubItems = (i.SubItems ?? []).Select(si => new SubItemSnapshot
                     {
                         Id = si.Id,
                         Name = si.Name,
