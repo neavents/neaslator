@@ -271,6 +271,41 @@ public sealed class StartTranslationConsumerTests
     }
 
     [Fact]
+    public async Task MenuFetchThrows_ConsumerFaults_NoCompletedEventPublished()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<CancellationToken>())
+            .Returns<MenuSnapshot?>(_ => throw new HttpRequestException("menu service unreachable"));
+
+        await using ServiceProvider provider = BuildHarness($"saga-throw-{menuId}");
+        await SeedLanguages(provider, "fr", "de");
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId));
+
+            (await harness.Consumed.Any<StartTranslationCommand>()).Should().BeTrue();
+
+            // The saga rethrows -> the message faults with the original exception.
+            IReceivedMessage<StartTranslationCommand> consumed =
+                harness.Consumed.Select<StartTranslationCommand>().First();
+            consumed.Exception.Should().BeOfType<HttpRequestException>();
+
+            harness.Published.Select<MenuTranslationCompletedEvent>().Should().BeEmpty();
+
+            // "Started" was still announced before the failure.
+            await _clientProxy.ReceivedWithAnyArgs(1).SendCoreAsync(default!, default!, default);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
     public async Task SnapshotNotFound_ShortCircuits_NoCompletedEventPublished()
     {
         Ulid menuId = Ulid.NewUlid();
