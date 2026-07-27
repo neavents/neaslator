@@ -1,0 +1,16 @@
+<Solution>
+  <!-- This repository had no solution file. Both projects built fine when named explicitly, but
+       `dotnet build` and `dotnet test` at the root had nothing to act on, so there was no single
+       command that compiled and ran everything — and nothing that would notice a third project
+       being added and never wired in.
+
+       That is not hypothetical: neavents-dracula kept 304 tests in two projects that were absent
+       from its solution, and they had silently stopped compiling against the current source because
+       the solution build stayed green without them. -->
+  <Folder Name="/src/">
+    <Project Path="src/Neaslator/Neaslator.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Neaslator.Tests/Neaslator.Tests.csproj" />
+  </Folder>
+</Solution>
