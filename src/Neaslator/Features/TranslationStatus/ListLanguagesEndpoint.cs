@@ -7,7 +7,7 @@ public static class ListLanguagesEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/api/v1/languages", (NeaslatorDbContext db, CancellationToken ct) => HandleAsync(db, ct));
+        group.MapGet("/translate/v1/languages", (NeaslatorDbContext db, CancellationToken ct) => HandleAsync(db, ct));
     }
 
     internal static async Task<IResult> HandleAsync(NeaslatorDbContext db, CancellationToken ct)

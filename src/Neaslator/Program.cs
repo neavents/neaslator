@@ -73,6 +73,7 @@ builder.Services.AddNeaslatorTelemetry(builder.Configuration);
 builder.Services.AddMassTransit(cfg =>
 {
     cfg.AddConsumer<MenuPublishedConsumer>();
+    cfg.AddConsumer<MenuTranslationRequestedConsumer>();
     cfg.AddConsumer<StartTranslationConsumer>();
 
     cfg.UsingRabbitMq((context, rabbit) =>
@@ -89,6 +90,21 @@ builder.Services.AddMassTransit(cfg =>
 
         rabbit.UseDelayedMessageScheduler();
 
+        // No retry policy was configured, so the first transient failure dead-lettered the
+        // message permanently. StartTranslationConsumer reads the menu from menu-service over
+        // HTTP; restarting menu-api during a publish produced a single "Connection refused" and
+        // the translation was lost — it never came back when menu-api returned seconds later.
+        //
+        // Immediate retries cover a blip. Delayed redelivery releases the message back to the
+        // broker between attempts, so a dependency that is genuinely restarting has minutes to
+        // come back without this consumer holding a thread. Only after both are exhausted does
+        // the message reach _error, which is what the publish-spine smoke asserts on.
+        rabbit.UseMessageRetry(r => r.Interval(3, TimeSpan.FromSeconds(5)));
+        rabbit.UseDelayedRedelivery(r => r.Intervals(
+            TimeSpan.FromSeconds(30),
+            TimeSpan.FromMinutes(2),
+            TimeSpan.FromMinutes(10)));
+
         rabbit.ConfigureEndpoints(context);
     });
 });
@@ -98,6 +114,17 @@ builder.Services.AddNeaslatorHealthChecks(builder.Configuration);
 builder.Services.AddHttpClient<IMenuDataProvider, HttpMenuDataProvider>(client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["MenuService:BaseUrl"] ?? "http://menu-api:8080");
+
+    // Service credentials for menu-service's TrustedHeader scheme. neaslator reads the EDITOR
+    // endpoint (it needs the do-not-translate flags the public projection drops), which is
+    // authenticated — so the shared secret is required, not optional. It reaches menu-api
+    // directly rather than through the gateway, so nothing else would vouch for it.
+    string serviceUserId = builder.Configuration["MenuService:ServiceUserId"] ?? "neaslator-service";
+    client.DefaultRequestHeaders.Add("X-User-Id", serviceUserId);
+
+    string? internalKey = builder.Configuration["MenuService:InternalApiKey"];
+    if (!string.IsNullOrWhiteSpace(internalKey))
+        client.DefaultRequestHeaders.Add("X-Internal-Key", internalKey);
 });
 
 builder.Services.AddSignalR();
@@ -110,6 +137,10 @@ WebApplication app = builder.Build();
 
 app.UseMiddleware<Neaslator.Observability.TelemetryEnrichmentMiddleware>();
 app.UseSerilogRequestLogging();
+
+// Everything below except /, /health and the hub requires the shared gateway secret. This service
+// enforced nothing before, and its container publishes a port. See InternalKeyMiddleware.
+app.UseMiddleware<Neaslator.InternalKeyMiddleware>();
 
 app.MapOpenApi();
 app.MapHub<TranslationHub>("/hubs/translation");

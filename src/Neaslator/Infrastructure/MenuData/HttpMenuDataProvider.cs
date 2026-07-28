@@ -13,9 +13,22 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
         _logger = logger;
     }
 
-    public async Task<MenuSnapshot?> GetMenuSnapshotAsync(Ulid menuId, CancellationToken ct)
+    public async Task<MenuSnapshot?> GetMenuSnapshotAsync(Ulid menuId, Ulid ownerId, CancellationToken ct)
     {
-        HttpResponseMessage response = await _http.GetAsync($"/api/v1/smartmenu/{menuId}", ct);
+        // The EDITOR endpoint, not the public one.
+        //
+        // The public projection is deliberately minimal for the 14.3 KB browser budget and
+        // does not carry doNotTranslateName/doNotTranslateDescription. Reading it here made
+        // every flag deserialize as false, so text the author had explicitly excluded would
+        // have been translated anyway. It also only serves *published* menus, while a
+        // translation request is most often made against a draft.
+        // The tenant travels per request, not on the shared HttpClient: one neaslator instance
+        // translates menus for many venues concurrently, so a default header would be a race.
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/editor/smartmenu/{menuId}");
+        request.Headers.Add("X-Venue-Id", ownerId.ToString());
+        request.Headers.Add("X-Tenant-Id", ownerId.ToString());
+
+        HttpResponseMessage response = await _http.SendAsync(request, ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -23,7 +36,8 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
             return null;
         }
 
-        MenuServiceResponse? menuData = await response.Content.ReadFromJsonAsync<MenuServiceResponse>(ct);
+        EditorMenuEnvelope? envelope = await response.Content.ReadFromJsonAsync<EditorMenuEnvelope>(ct);
+        MenuServiceResponse? menuData = envelope?.SmartMenuDto;
         if (menuData is null)
             return null;
 

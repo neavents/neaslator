@@ -9,7 +9,7 @@ public static class RetryEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapPost("/api/v1/translate/menu/{menuId}/retry", (
+        group.MapPost("/translate/v1/menu/{menuId}/retry", (
             string menuId,
             RetryTranslationRequest request,
             NeaslatorDbContext db,

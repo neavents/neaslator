@@ -2,9 +2,20 @@ using System.Text.Json.Serialization;
 
 namespace Neaslator.Infrastructure.MenuData;
 
+/// <summary>
+/// The editor endpoint wraps the menu in { smartMenuDto, detailsDto }. Only the first is
+/// needed here; detailsDto is audit/hyper metadata.
+/// </summary>
+internal sealed record EditorMenuEnvelope
+{
+    [JsonPropertyName("smartMenuDto")]
+    public MenuServiceResponse? SmartMenuDto { get; init; }
+}
+
 internal sealed record MenuServiceResponse
 {
-    [JsonPropertyName("id")]
+    // The editor DTO names this smartMenuId; sections/items/sub-items use plain "id".
+    [JsonPropertyName("smartMenuId")]
     public Ulid Id { get; init; }
 
     [JsonPropertyName("name")]

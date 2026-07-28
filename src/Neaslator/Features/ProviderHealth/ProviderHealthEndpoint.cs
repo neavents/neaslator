@@ -6,7 +6,7 @@ public static class ProviderHealthEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/api/v1/providers/health",
+        group.MapGet("/translate/v1/providers/health",
             (ITranslationProvider provider, CancellationToken ct) => HandleAsync(provider, ct));
     }
 

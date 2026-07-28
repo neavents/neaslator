@@ -7,7 +7,7 @@ public static class TranslationStatusEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/api/v1/translate/menu/{menuId}/status",
+        group.MapGet("/translate/v1/menu/{menuId}/status",
             (string menuId, NeaslatorDbContext db, CancellationToken ct) => HandleAsync(menuId, db, ct));
     }
 

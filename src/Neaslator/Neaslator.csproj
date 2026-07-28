@@ -10,11 +10,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../../neavents-messaging-contracts/src/Neavents.Messaging.Contracts/Neavents.Messaging.Contracts.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Ulid" />
+    <!--
+      Contracts come from GitHub Packages, like every other service. This was a ProjectReference
+      to ../../../neavents-messaging-contracts, which meant neaslator compiled whatever happened
+      to be in that working tree: no version attached, no signal to any other service when the
+      shapes changed, and a build that only worked where the sibling repo sat at that exact
+      relative path. It also forced this image's build context to the whole monorepo.
+    -->
+    <PackageReference Include="Neavents.Messaging.Contracts" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>

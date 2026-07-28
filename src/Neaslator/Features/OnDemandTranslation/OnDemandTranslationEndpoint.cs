@@ -11,7 +11,7 @@ public static class OnDemandTranslationEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapPost("/api/v1/translate/on-demand", (
+        group.MapPost("/translate/v1/on-demand", (
             OnDemandTranslationRequest request,
             ITranslationCache cache,
             ITranslationRouter router,
