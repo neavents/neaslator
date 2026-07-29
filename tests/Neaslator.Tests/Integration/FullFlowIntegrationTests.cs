@@ -125,10 +125,34 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
 
     private static long Hash(string text) => TranslationHasher.ComputeHash(TextNormalizer.Normalize(text.AsSpan()));
 
-    private void StubMenu(Ulid menuId, Ulid sectionId, Ulid itemId, string section, string item, string description)
+    /// <summary>
+    /// Stands up the menu-service response for one menu, on the route and in the shape the provider
+    /// actually reads.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two things here are load-bearing and both were previously wrong in this stub, which is how
+    /// the end-to-end test kept passing after production changed underneath it.
+    /// </para>
+    /// <para>
+    /// <b>The route is the editor one.</b> The public projection is trimmed for the browser budget
+    /// and omits the do-not-translate flags, so reading it made them all default to <c>false</c>
+    /// and translated text an author had explicitly excluded. It also only serves published menus,
+    /// while translation is usually requested against a draft.
+    /// </para>
+    /// <para>
+    /// <b>The tenant headers are matched, not ignored.</b> Requiring them here means the stub does
+    /// not answer a request that lost them — so a regression in tenant scoping fails this test
+    /// instead of quietly returning another venue's menu.
+    /// </para>
+    /// </remarks>
+    private void StubMenu(
+        Ulid menuId, Ulid ownerId, Ulid sectionId, Ulid itemId, string section, string item, string description)
     {
         string json = JsonSerializer.Serialize(new
         {
+            smartMenuDto = new
+            {
             id = menuId.ToString(),
             name = "Menu",
             sections = new[]
@@ -153,21 +177,26 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
                     }
                 }
             }
+            }
         });
 
         _menuService
-            .Given(WireMockRequest.Create().WithPath($"/api/v1/smartmenu/{menuId}").UsingGet())
+            .Given(WireMockRequest.Create()
+                .WithPath($"/api/v1/editor/smartmenu/{menuId}")
+                .WithHeader("X-Venue-Id", ownerId.ToString())
+                .WithHeader("X-Tenant-Id", ownerId.ToString())
+                .UsingGet())
             .RespondWith(WireMockResponse.Create().WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json")
                 .WithBody(json));
     }
 
-    private async Task<MenuTranslationCompletedEvent> RunSaga(Ulid menuId)
+    private async Task<MenuTranslationCompletedEvent> RunSaga(Ulid menuId, Ulid ownerId)
     {
         await _harness.Bus.Publish(new StartTranslationCommand
         {
             MenuId = menuId,
-            OwnerId = Ulid.NewUlid(),
+            OwnerId = ownerId,
             SourceLanguageCode = "en",
             VenueType = "Restaurant",
             CuisineType = "Italian",
@@ -186,9 +215,10 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
     {
         // ── Run 1: brand-new menu, everything is a cache miss ───────────────────────────
         Ulid menu1 = Ulid.NewUlid();
-        StubMenu(menu1, Ulid.NewUlid(), Ulid.NewUlid(), "Starters", "Soup", "Tomato soup");
+        Ulid owner1 = Ulid.NewUlid();
+        StubMenu(menu1, owner1, Ulid.NewUlid(), Ulid.NewUlid(), "Starters", "Soup", "Tomato soup");
 
-        MenuTranslationCompletedEvent evt1 = await RunSaga(menu1);
+        MenuTranslationCompletedEvent evt1 = await RunSaga(menu1, owner1);
 
         evt1.TotalLanguages.Should().Be(2);
         evt1.CompletedLanguages.Should().Be(2);
@@ -221,10 +251,14 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         // ── Run 2: a different menu with identical text -> global memory serves it all ──
         int callsAfterRun1 = _echo.CallCount;
 
+        // A different tenant as well as a different menu: the global translation memory is shared
+        // across venues by design (the same English text has the same French translation), and this
+        // is what proves it, rather than proving one venue can read another's menu.
         Ulid menu2 = Ulid.NewUlid();
-        StubMenu(menu2, Ulid.NewUlid(), Ulid.NewUlid(), "Starters", "Soup", "Tomato soup");
+        Ulid owner2 = Ulid.NewUlid();
+        StubMenu(menu2, owner2, Ulid.NewUlid(), Ulid.NewUlid(), "Starters", "Soup", "Tomato soup");
 
-        MenuTranslationCompletedEvent evt2 = await RunSaga(menu2);
+        MenuTranslationCompletedEvent evt2 = await RunSaga(menu2, owner2);
 
         evt2.CompletedLanguages.Should().Be(2);
         evt2.TranslatedMenus.Single(m => m.LanguageCode == "fr").Sections[0].Items[0].TranslatedName.Should().Be("[fr] Soup");

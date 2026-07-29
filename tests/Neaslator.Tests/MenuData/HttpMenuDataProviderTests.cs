@@ -14,11 +14,21 @@ public sealed class HttpMenuDataProviderTests
         return Substitute.For<ILogger<HttpMenuDataProvider>>();
     }
 
+    /// <summary>
+    /// Wraps a menu body in the editor endpoint's envelope: it answers
+    /// <c>{"smartMenuDto": { ... }}</c>, not a bare menu.
+    /// </summary>
+    private static string Envelope(string menuJson) => $$"""{"smartMenuDto":{{menuJson}}}""";
+
     private static HttpClient CreateHttpClient(HttpStatusCode statusCode, string? responseBody = null)
     {
         var handler = new FakeHttpMessageHandler(statusCode, responseBody);
         return new HttpClient(handler) { BaseAddress = new Uri("http://test.local") };
     }
+
+    /// <summary>A client whose body is the given menu, wrapped as the editor route returns it.</summary>
+    private static HttpClient CreateMenuClient(string menuJson) =>
+        CreateHttpClient(HttpStatusCode.OK, Envelope(menuJson));
 
     [Fact]
     public async Task GetMenuSnapshotAsync_SuccessResponse_MapsToMenuSnapshot()
@@ -66,10 +76,10 @@ public sealed class HttpMenuDataProviderTests
             }
         });
 
-        var http = CreateHttpClient(HttpStatusCode.OK, responseJson);
+        var http = CreateMenuClient(responseJson);
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var result = await provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
 
         result.Should().NotBeNull();
         result!.Sections.Should().ContainSingle();
@@ -90,7 +100,7 @@ public sealed class HttpMenuDataProviderTests
         var http = CreateHttpClient(HttpStatusCode.NotFound);
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var result = await provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
 
         result.Should().BeNull();
     }
@@ -102,7 +112,7 @@ public sealed class HttpMenuDataProviderTests
         var http = CreateHttpClient(HttpStatusCode.InternalServerError);
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var result = await provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
 
         result.Should().BeNull();
     }
@@ -142,10 +152,10 @@ public sealed class HttpMenuDataProviderTests
             }
         });
 
-        var http = CreateHttpClient(HttpStatusCode.OK, responseJson);
+        var http = CreateMenuClient(responseJson);
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var result = await provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
 
         result!.Sections[0].DoNotTranslateName.Should().BeTrue();
         result.Sections[0].DoNotTranslateDescription.Should().BeTrue();
@@ -169,10 +179,10 @@ public sealed class HttpMenuDataProviderTests
             }
         });
 
-        var http = CreateHttpClient(HttpStatusCode.OK, responseJson);
+        var http = CreateMenuClient(responseJson);
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var result = await provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
 
         result!.Sections.Should().HaveCount(3);
         result.Sections.Select(s => s.Name).Should().ContainInOrder("Section1", "Section2", "Section3");
@@ -185,7 +195,7 @@ public sealed class HttpMenuDataProviderTests
         var http = CreateHttpClient(HttpStatusCode.OK, "{invalid}");
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var act = () => provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var act = () => provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
         await act.Should().ThrowAsync<JsonException>();
     }
 
@@ -196,7 +206,7 @@ public sealed class HttpMenuDataProviderTests
         var http = CreateHttpClient(HttpStatusCode.OK, "");
         var provider = new HttpMenuDataProvider(http, CreateLogger());
 
-        var act = () => provider.GetMenuSnapshotAsync(menuId, CancellationToken.None);
+        var act = () => provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
         await act.Should().ThrowAsync<JsonException>();
     }
 
