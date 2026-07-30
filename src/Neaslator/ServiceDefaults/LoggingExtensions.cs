@@ -50,9 +50,42 @@ public static class LoggingExtensions
                                 ? OtlpProtocol.Grpc
                                 : OtlpProtocol.HttpProtobuf,
                         };
+
+                    // The log pipeline has its OWN resource, and without this it has no service name.
+                    //
+                    // The OpenTelemetry SDK builds a resource for traces and metrics; Serilog's sink
+                    // builds a separate one for logs, and shares nothing with it. Leaving this unset
+                    // does not drop the logs — it delivers them under the SDK's fallback name,
+                    // "unknown_service:dotnet". Found live in SigNoz: 1,904 log lines in two hours,
+                    // every one of them from this service, all filed under a name that matches no
+                    // service and no trace.
+                    //
+                    // That is worse than losing them. Missing logs prompt a search; logs sitting in an
+                    // "unknown" bucket look like somebody else's problem, and the service they came
+                    // from reads as having no logging at all. It also breaks the join that makes
+                    // tracing useful — traces arrive as "Neaslator" and its logs did not, so no
+                    // amount of correlation-id plumbing would have connected them.
+                    //
+                    // Must match the name the tracer registers, exactly. A near-miss is two services
+                    // in the UI.
+                    options.ResourceAttributes = BuildLogResourceAttributes();
                 });
         });
 
         return builder;
     }
+
+    /// <summary>The resource attributes stamped on every exported log record.</summary>
+    /// <remarks>
+    /// A method rather than an inline object literal so there is something to assert against. The
+    /// defect this guards produced no error and no missing data: logs arrived under
+    /// <c>unknown_service:dotnet</c>, the SDK's fallback, which is indistinguishable from a service
+    /// that has not been instrumented yet unless you go looking in the bucket. Nothing inside a
+    /// configuration lambda can be tested, so the lambda now calls this.
+    /// </remarks>
+    internal static Dictionary<string, object> BuildLogResourceAttributes() => new()
+    {
+        ["service.name"] = ServiceIdentity.Name,
+    };
+
 }

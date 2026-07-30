@@ -33,7 +33,7 @@ public static class TelemetryExtensions
         services.AddOpenTelemetry()
             .ConfigureResource(resource => resource
                 .AddService(
-                    serviceName: "Neaslator",
+                    serviceName: ServiceIdentity.Name,
                     serviceVersion: serviceVersion,
                     serviceInstanceId: Environment.MachineName)
                 .AddAttributes(
