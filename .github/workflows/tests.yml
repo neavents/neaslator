@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Every guard this repo has runs only when someone runs it. That is not a guard.
+#
+# This estate has shipped: concurrent startup migrations corrupting a schema, a scoped publish staged
+# and never sent, a service six contract versions behind, two OTLP exporters disagreeing so logs were
+# silently dropped, and a gateway strip-list change that broke every write in another service. Tests
+# were written for all of them — and every one of those tests depends on a human remembering to run
+# it. CI is the difference between a check and a habit.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore Neaslator.slnx
+        env:
+          # nuget.config reads the GitHub Packages credential from the environment, so no token is
+          # committed to the repository.
+          NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Debug, not Release. Directory.Build.props turns warnings into errors in Release and the NuGet
+      # audit currently fails on pre-existing transitive advisories — a supply-chain issue rather than
+      # a test failure. Switch to Release once those are resolved; leaving it here means CI reports
+      # what the tests say instead of what the package feed says.
+      - name: Build
+        run: dotnet build Neaslator.slnx --no-restore -c Debug
+
+      - name: Test
+        run: dotnet test Neaslator.slnx --no-build -c Debug --logger "console;verbosity=normal"
+
