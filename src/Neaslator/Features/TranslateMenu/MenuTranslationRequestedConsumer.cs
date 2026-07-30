@@ -43,7 +43,17 @@ public sealed class MenuTranslationRequestedConsumer : IConsumer<MenuTranslation
             "Translation requested — MenuId={MenuId} Target={TargetLanguage} RequestedBy={RequestedBy}",
             message.MenuId, message.TargetLanguageCode ?? "all", message.RequestedBy ?? "system");
 
-        await _publisher.Publish(new StartTranslationCommand
+        // context.Publish, NOT the injected IPublishEndpoint.
+        //
+        // This consumer owns no DbContext and never saves. Under UseBusOutbox the scoped
+        // IPublishEndpoint STAGES a message until SaveChangesAsync writes it, so publishing through it
+        // here would stage StartTranslationCommand into a scope that then disposes — the command is
+        // never sent, no exception, no log, and translation silently never starts.
+        //
+        // Publishing through the ConsumeContext instead hands the message to the inbox's own
+        // transaction, which is committed when the inbox filter saves. That is the correct instrument
+        // for a consumer with no unit of work of its own.
+        await context.Publish(new StartTranslationCommand
         {
             MenuId = message.MenuId,
             OwnerId = message.OwnerId,

@@ -76,6 +76,31 @@ builder.Services.AddMassTransit(cfg =>
     cfg.AddConsumer<MenuTranslationRequestedConsumer>();
     cfg.AddConsumer<StartTranslationConsumer>();
 
+    // Transactional outbox and inbox. This service had NEITHER.
+    //
+    // Outbound: an integration event is now written to the outbox in the same transaction as the row
+    // it describes. Before this, neaslator saved and then called the broker as a separate, unretried
+    // step — anything interrupting that gap lost the event permanently with no record it existed.
+    //
+    // Inbound: the inbox deduplicates redelivery. RabbitMQ redelivers on connection loss, on a
+    // consumer that faults after its work has landed, and on each configured retry. Without it,
+    // StartTranslationConsumer re-ran a whole translation — real money at a translation provider —
+    // every time a message came back.
+    cfg.AddEntityFrameworkOutbox<NeaslatorDbContext>(o =>
+    {
+        o.UsePostgres();
+        o.UseBusOutbox();
+    });
+
+    // The INBOX half, which AddEntityFrameworkOutbox does NOT provide on its own — it registers the
+    // outbox services and enables UseBusOutbox for the send side only. Putting an inbox on a receive
+    // endpoint takes UseEntityFrameworkOutbox on the endpoint. That exact misunderstanding left
+    // identity, subscription and messaging with zero inbox filters on every endpoint for a long time
+    // (task #10), which is why this is a separate, explicit call and why the test asserts it against
+    // the running bus rather than against this source.
+    cfg.AddConfigureEndpointsCallback((registrationContext, _, endpointConfigurator) =>
+        endpointConfigurator.UseEntityFrameworkOutbox<NeaslatorDbContext>(registrationContext));
+
     cfg.UsingRabbitMq((context, rabbit) =>
     {
         string host = builder.Configuration["RabbitMq:Host"] ?? "localhost";

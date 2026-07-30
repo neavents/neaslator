@@ -197,6 +197,23 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                     TranslatedMenus = translatedMenus,
                     CompletedAt = DateTimeOffset.UtcNow
                 }, context.CancellationToken);
+
+                // Flush the outbox.
+                //
+                // UseBusOutbox makes the scoped IPublishEndpoint STAGE this message and hold it until
+                // SaveChangesAsync writes it to the outbox table. Nothing after this point saves, so
+                // without this line the event is staged into a scope that then disposes and is never
+                // sent — no exception, no log, a perfectly successful consume. Staging cannot fail, so
+                // there is nothing to catch either.
+                //
+                // The publish cannot simply move above the earlier save at the snapshot step: the payload
+                // is assembled from the translation results, which are computed after it. An explicit
+                // save purely to flush the outbox is the same resolution identity used for its publish
+                // sites that write no rows of their own.
+                //
+                // This exact defect was live in subscription at four sites, one of which meant a customer
+                // per batch was invoiced and never charged. See OutboxPublishOrderingTests.
+                await _db.SaveChangesAsync(context.CancellationToken);
             }
 
             TranslationNotificationType notificationType = result.FailedLanguages > 0
