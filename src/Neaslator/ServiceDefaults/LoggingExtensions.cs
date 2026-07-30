@@ -36,9 +36,20 @@ public static class LoggingExtensions
                     // neither looks wrong on its own.
                     options.Protocol =
                         Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL")
-                            ?.Trim().ToLowerInvariant() == "grpc"
-                            ? OtlpProtocol.Grpc
-                            : OtlpProtocol.HttpProtobuf;
+                            ?.Trim().ToLowerInvariant() switch
+                        {
+                            "grpc" => OtlpProtocol.Grpc,
+                            "http/protobuf" => OtlpProtocol.HttpProtobuf,
+
+                            // No explicit protocol: INFER FROM THE PORT rather than defaulting.
+                            // A default is a guess that can disagree with the endpoint, and that
+                            // disagreement is what shipped in four services here. The port is not a
+                            // guess — 4317 IS gRPC, 4318 IS HTTP/protobuf — so it cannot contradict
+                            // where the collector actually listens. Pattern taken from qrmenu-edge.
+                            _ => options.Endpoint?.Contains(":4317", StringComparison.Ordinal) == true
+                                ? OtlpProtocol.Grpc
+                                : OtlpProtocol.HttpProtobuf,
+                        };
                 });
         });
 
