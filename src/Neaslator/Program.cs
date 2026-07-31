@@ -160,6 +160,25 @@ builder.Services.AddOpenApi();
 
 WebApplication app = builder.Build();
 
+// Apply pending migrations on boot.
+//
+// This service had NO migration step. Three migrations existed in source and exactly ONE —
+// InitialCreate, from 14 June — had ever reached the database. The schema froze there, so
+// AddMassTransitInboxOutbox never ran, so OutboxState did not exist, so every publish staged
+// through UseBusOutbox() failed at SaveChangesAsync. Neaslator could not emit a single integration
+// event: that is why translations never reached KV, and why menu.smart_menu_translations held one
+// row while qrmenu-edge sat waiting on MenuTranslationCompleted.
+//
+// Advisory-locked because every service here migrates against the same Postgres on boot with no
+// coordination, and replicas start together. See MigrationLockExtensions for the four incidents
+// that pattern exists to prevent.
+using (IServiceScope scope = app.Services.CreateScope())
+{
+    NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+    await db.MigrateWithAdvisoryLockAsync("neaslator");
+}
+
+
 app.UseMiddleware<Neaslator.Observability.TelemetryEnrichmentMiddleware>();
 app.UseSerilogRequestLogging();
 
