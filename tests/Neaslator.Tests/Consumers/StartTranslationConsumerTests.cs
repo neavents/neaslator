@@ -104,6 +104,99 @@ public sealed class StartTranslationConsumerTests
         TriggeredAt = DateTimeOffset.UtcNow
     };
 
+    /// <summary>A section holding one item that has two sub-items — a portion and a size.</summary>
+    private static MenuSnapshot ItemWithSubItemsSnapshot(Ulid sectionId, Ulid itemId, Ulid subA, Ulid subB) => new()
+    {
+        Sections =
+        [
+            new SectionSnapshot
+            {
+                Id = sectionId,
+                Name = "Starters",
+                Items =
+                [
+                    new ItemSnapshot
+                    {
+                        Id = itemId,
+                        Name = "Soup",
+                        Description = "Tomato soup",
+                        SubItems =
+                        [
+                            new SubItemSnapshot { Id = subA, Name = "Small bowl" },
+                            new SubItemSnapshot { Id = subB, Name = "Large bowl", Description = "Serves two" },
+                        ],
+                    }
+                ]
+            }
+        ]
+    };
+
+    [Fact]
+    public async Task SubItemTranslationsReachTheCompletionEvent()
+    {
+        // The defect this pins: sub-items were translated and then thrown away.
+        //
+        // DiffEngine has always sent them to the provider — AddSubItemUnits sits directly beside
+        // AddItemUnits — so every portion, size and variant was translated, paid for at the LLM and
+        // written to the translation memory. The assembly loop then built the completion event from
+        // section.Items alone, and not one of those translations ever reached the wire.
+        //
+        // Nothing reported it. The payload was valid, the item names above the sub-items were
+        // correct, and a diner simply saw every variant in the source language in every language.
+        //
+        // They belong in the SAME Items list rather than a nested one, because qrmenu-edge's parser
+        // gives each sub-item its own dense id and its own SourceIds entry, and its translator
+        // resolves every entry in this list against that dictionary. A flat list is therefore
+        // translated by the code already at the edge — no contract change, no edge change.
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid sectionId = Ulid.NewUlid();
+        Ulid itemId = Ulid.NewUlid();
+        Ulid subA = Ulid.NewUlid();
+        Ulid subB = Ulid.NewUlid();
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+            .Returns(ItemWithSubItemsSnapshot(sectionId, itemId, subA, subB));
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-subitems-{menuId}");
+        await SeedLanguages(provider, "fr");
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId));
+
+            Assert.True(await harness.Published.Any<MenuTranslationCompletedEvent>());
+
+            MenuTranslationCompletedEvent evt = harness.Published
+                .Select<MenuTranslationCompletedEvent>()
+                .Select(p => p.Context.Message)
+                .First();
+
+            TranslatedSectionData section = Assert.Single(
+                evt.TranslatedMenus.Single(m => m.LanguageCode == "fr").Sections);
+
+            // Three entries: the item and both sub-items, each keyed by its own id.
+            Assert.Equal(3, section.Items.Count);
+
+            TranslatedItemData small = Assert.Single(section.Items, i => i.ItemId == subA);
+            Assert.Equal("Small bowl::fr", small.TranslatedName);
+
+            TranslatedItemData large = Assert.Single(section.Items, i => i.ItemId == subB);
+            Assert.Equal("Large bowl::fr", large.TranslatedName);
+
+            // A sub-item description is carried too. It is the field most likely to be dropped
+            // silently, because most sub-items do not have one and a test using only names would
+            // pass with it missing.
+            Assert.Equal("Serves two::fr", large.TranslatedDescription);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     [Fact]
     public async Task HappyPath_PublishesCompletedEvent_SavesSnapshot_Notifies()
     {

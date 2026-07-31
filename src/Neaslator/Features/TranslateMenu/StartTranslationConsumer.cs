@@ -167,6 +167,47 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                             }
 
                             translatedItems.Add(new TranslatedItemData { ItemId = item.Id, TranslatedName = translatedName, TranslatedDescription = translatedDescription });
+
+                            // Sub-items go into the SAME Items list, not a nested one.
+                            //
+                            // DiffEngine has always sent sub-items to the provider — AddSubItemUnits
+                            // sits right beside AddItemUnits — so they were translated, paid for at
+                            // the LLM and written to the translation memory. This loop then assembled
+                            // the completion event from section.Items alone, so not one of those
+                            // translations ever reached the wire. Every portion, size and variant on
+                            // every menu rendered in the source language, in every language, and
+                            // nothing reported a problem: the payload was valid and the item names
+                            // above it were correct.
+                            //
+                            // A flat list is right rather than a shortcut. qrmenu-edge's parser gives
+                            // each sub-item its own dense id and its own SourceIds entry
+                            // (PublicMenuParser records subEl exactly as it records itemEl), and
+                            // MenuSyncDataTranslator resolves every entry in this list against that
+                            // dictionary. So a sub-item keyed by its own ULID is translated by the
+                            // code already there — no contract change, and no edge change.
+                            foreach (SubItemSnapshot subItem in item.SubItems)
+                            {
+                                string subNameNorm = TextNormalizer.Normalize(subItem.Name);
+                                long subNameHash = TranslationHasher.ComputeHash(subNameNorm);
+                                IReadOnlyList<CacheLookupResult> subNameLookup = await _cache.LookupAsync(subNameHash, subNameNorm, command.SourceLanguageCode, [langResult.TargetLanguageCode], context.CancellationToken);
+                                string translatedSubName = subNameLookup.FirstOrDefault(r => r.Translation is not null)?.Translation?.TranslatedText ?? subItem.Name;
+
+                                string? translatedSubDescription = null;
+                                if (!string.IsNullOrEmpty(subItem.Description))
+                                {
+                                    string subDescNorm = TextNormalizer.Normalize(subItem.Description.AsSpan());
+                                    long subDescHash = TranslationHasher.ComputeHash(subDescNorm);
+                                    IReadOnlyList<CacheLookupResult> subDescLookup = await _cache.LookupAsync(subDescHash, subDescNorm, command.SourceLanguageCode, [langResult.TargetLanguageCode], context.CancellationToken);
+                                    translatedSubDescription = subDescLookup.FirstOrDefault(r => r.Translation is not null)?.Translation?.TranslatedText ?? subItem.Description;
+                                }
+
+                                translatedItems.Add(new TranslatedItemData
+                                {
+                                    ItemId = subItem.Id,
+                                    TranslatedName = translatedSubName,
+                                    TranslatedDescription = translatedSubDescription,
+                                });
+                            }
                         }
                         translatedSections.Add(new TranslatedSectionData { SectionId = section.Id, TranslatedName = translatedSectionName, Items = translatedItems });
                     }
