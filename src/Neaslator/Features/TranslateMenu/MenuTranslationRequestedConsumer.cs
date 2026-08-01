@@ -57,6 +57,10 @@ public sealed class MenuTranslationRequestedConsumer : IConsumer<MenuTranslation
         {
             MenuId = message.MenuId,
             OwnerId = message.OwnerId,
+
+            // Carried through from the request. Without it the provider falls back to the owner,
+            // which is only correct while owner and tenant are the same id.
+            TenantId = message.TenantId,
             SourceLanguageCode = message.SourceLanguageCode,
             VenueType = message.VenueType,
             CuisineType = message.CuisineType,

@@ -71,7 +71,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
             MenuSnapshot? currentSnapshot;
             using (Activity? fetchActivity = NeaslatorActivitySources.Saga.StartActivity("fetch_menu_snapshot"))
             {
-                currentSnapshot = await _menuDataProvider.GetMenuSnapshotAsync(command.MenuId, command.OwnerId, context.CancellationToken);
+                currentSnapshot = await _menuDataProvider.GetMenuSnapshotAsync(command.MenuId, command.OwnerId, command.TenantId, context.CancellationToken);
                 fetchActivity?.SetTag("neaslator.snapshot_found", currentSnapshot is not null);
                 if (currentSnapshot is not null)
                 {

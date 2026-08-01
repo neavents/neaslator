@@ -13,7 +13,8 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
         _logger = logger;
     }
 
-    public async Task<MenuSnapshot?> GetMenuSnapshotAsync(Ulid menuId, Ulid ownerId, CancellationToken ct)
+    public async Task<MenuSnapshot?> GetMenuSnapshotAsync(
+        Ulid menuId, Ulid ownerId, Ulid? tenantId, CancellationToken ct)
     {
         // The EDITOR endpoint, not the public one.
         //
@@ -25,8 +26,19 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
         // The tenant travels per request, not on the shared HttpClient: one neaslator instance
         // translates menus for many venues concurrently, so a default header would be a race.
         using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/editor/smartmenu/{menuId}");
+        // X-Venue-Id is the owner: the venue or event the menu hangs off.
         request.Headers.Add("X-Venue-Id", ownerId.ToString());
-        request.Headers.Add("X-Tenant-Id", ownerId.ToString());
+
+        // X-Tenant-Id is the ORGANISATION, which is a different thing and used to be sent as the
+        // owner. That was correct only while every menu in the estate had owner_id == tenant_id —
+        // all 467 of them did. The first menu that genuinely belonged to a venue inside an
+        // organisation made this header name a tenant that owns nothing: menu-service's query filter
+        // matched no rows, the fetch answered 404, and translation stopped with "Failed to retrieve
+        // menu snapshot" long after the caller had been told 202.
+        //
+        // Falls back to the owner when the publisher has not been redeployed and omits the tenant,
+        // which is exactly the previous behaviour rather than a hard failure.
+        request.Headers.Add("X-Tenant-Id", (tenantId ?? ownerId).ToString());
 
         HttpResponseMessage response = await _http.SendAsync(request, ct);
 

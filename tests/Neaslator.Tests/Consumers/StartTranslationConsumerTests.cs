@@ -155,7 +155,7 @@ public sealed class StartTranslationConsumerTests
         Ulid subA = Ulid.NewUlid();
         Ulid subB = Ulid.NewUlid();
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
             .Returns(ItemWithSubItemsSnapshot(sectionId, itemId, subA, subB));
         CacheReturnsHitsForEverything();
 
@@ -205,7 +205,7 @@ public sealed class StartTranslationConsumerTests
         Ulid sectionId = Ulid.NewUlid();
         Ulid itemId = Ulid.NewUlid();
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
             .Returns(SingleItemSnapshot(sectionId, itemId));
         CacheReturnsHitsForEverything();
 
@@ -256,7 +256,7 @@ public sealed class StartTranslationConsumerTests
         Ulid sectionId = Ulid.NewUlid();
         Ulid itemId = Ulid.NewUlid();
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
             .Returns(SingleItemSnapshot(sectionId, itemId));
 
         // fr resolves from cache; de misses and is sent to the provider.
@@ -314,7 +314,7 @@ public sealed class StartTranslationConsumerTests
         Ulid itemId = Ulid.NewUlid();
         MenuSnapshot snapshot = SingleItemSnapshot(sectionId, itemId);
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>()).Returns(snapshot);
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>()).Returns(snapshot);
         CacheReturnsHitsForEverything();
 
         await using ServiceProvider provider = BuildHarness($"saga-nochange-{menuId}");
@@ -369,7 +369,7 @@ public sealed class StartTranslationConsumerTests
         Ulid menuId = Ulid.NewUlid();
         Ulid ownerId = Ulid.NewUlid();
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
             .Returns<MenuSnapshot?>(_ => throw new HttpRequestException("menu service unreachable"));
 
         await using ServiceProvider provider = BuildHarness($"saga-throw-{menuId}");
@@ -404,7 +404,7 @@ public sealed class StartTranslationConsumerTests
         Ulid menuId = Ulid.NewUlid();
         Ulid ownerId = Ulid.NewUlid();
 
-        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<CancellationToken>())
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
             .Returns((MenuSnapshot?)null);
 
         await using ServiceProvider provider = BuildHarness($"saga-null-{menuId}");

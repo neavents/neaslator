@@ -86,6 +86,21 @@ public sealed record StartTranslationCommand
 {
     public required Ulid MenuId { get; init; }
     public required Ulid OwnerId { get; init; }
+
+    /// <summary>
+    /// The organisation the menu belongs to, which is NOT the owner.
+    /// </summary>
+    /// <remarks>
+    /// The owner is the venue or event; the tenant is the organisation that owns it. The two were
+    /// identical on every menu in the estate, so the owner was sent as the tenant header and it
+    /// worked by coincidence. The first menu that genuinely belonged to a venue inside an
+    /// organisation made the header name a tenant owning nothing, and the menu fetch answered 404.
+    ///
+    /// Nullable: a publisher that predates the field omits it, and the provider falls back to the
+    /// owner — the previous behaviour rather than a hard failure.
+    /// </remarks>
+    public Ulid? TenantId { get; init; }
+
     public required string SourceLanguageCode { get; init; }
     public required string VenueType { get; init; }
     public required string CuisineType { get; init; }

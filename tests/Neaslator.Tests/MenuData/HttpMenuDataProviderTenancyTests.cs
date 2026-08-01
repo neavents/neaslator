@@ -57,12 +57,36 @@ public sealed class HttpMenuDataProviderTenancyTests
         request.Headers.TryGetValues(name, out var values) ? string.Join(",", values) : null;
 
     [Fact]
-    public async Task The_owner_is_sent_as_both_tenant_headers()
+    public async Task The_organisation_is_sent_as_the_tenant_and_the_owner_as_the_venue()
     {
+        // The distinction this whole change is about. X-Venue-Id names the venue or event the menu
+        // hangs off; X-Tenant-Id names the ORGANISATION that owns it, and menu-service's query
+        // filter matches on the second. Sending the owner for both was correct only while the two
+        // were the same id — which they were on all 467 menus in the estate, so it worked by
+        // coincidence until a menu genuinely belonged to a venue inside an organisation. Then the
+        // header named a tenant owning nothing, the editor read answered 404, and translation
+        // stopped with "Failed to retrieve menu snapshot" after the caller had been told 202.
+        var (provider, handler) = Build();
+        var ownerId = Ulid.NewUlid();
+        var tenantId = Ulid.NewUlid();
+
+        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), ownerId, tenantId, CancellationToken.None);
+
+        Header(handler.Last!, "X-Venue-Id").Should().Be(ownerId.ToString());
+        Header(handler.Last!, "X-Tenant-Id").Should().Be(tenantId.ToString(),
+            "the tenant header must carry the organisation, not the venue");
+    }
+
+    [Fact]
+    public async Task A_missing_tenant_falls_back_to_the_owner()
+    {
+        // A publisher that predates the field omits it. Falling back reproduces the previous
+        // behaviour exactly rather than failing — correct for every menu where the two are equal,
+        // which is every menu that existed before this.
         var (provider, handler) = Build();
         var ownerId = Ulid.NewUlid();
 
-        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), ownerId, CancellationToken.None);
+        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), ownerId, null, CancellationToken.None);
 
         Header(handler.Last!, "X-Venue-Id").Should().Be(ownerId.ToString());
         Header(handler.Last!, "X-Tenant-Id").Should().Be(ownerId.ToString());
@@ -77,11 +101,11 @@ public sealed class HttpMenuDataProviderTenancyTests
         var (provider, handler) = Build();
 
         var first = Ulid.NewUlid();
-        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), first, CancellationToken.None);
+        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), first, null, CancellationToken.None);
         Header(handler.Last!, "X-Tenant-Id").Should().Be(first.ToString());
 
         var second = Ulid.NewUlid();
-        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), second, CancellationToken.None);
+        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), second, null, CancellationToken.None);
         Header(handler.Last!, "X-Tenant-Id").Should().Be(second.ToString(),
             "the second request must carry its own tenant, not the first one's");
     }
@@ -94,7 +118,7 @@ public sealed class HttpMenuDataProviderTenancyTests
         var (provider, handler) = Build();
         var menuId = Ulid.NewUlid();
 
-        await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), CancellationToken.None);
+        await provider.GetMenuSnapshotAsync(menuId, Ulid.NewUlid(), null, CancellationToken.None);
 
         handler.Last!.RequestUri!.AbsolutePath
             .Should().Be($"/api/v1/editor/smartmenu/{menuId}");
@@ -108,7 +132,7 @@ public sealed class HttpMenuDataProviderTenancyTests
         var (provider, handler) = Build();
         var ownerId = Ulid.NewUlid();
 
-        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), ownerId, CancellationToken.None);
+        await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), ownerId, null, CancellationToken.None);
 
         handler.Last!.RequestUri!.ToString().Should().NotContain(ownerId.ToString());
     }

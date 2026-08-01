@@ -51,7 +51,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
         // surfaces as a customer's brand names being rewritten, not as an error.
         var provider = RawProvider("""{"id":"01F8MECHZX3TBDSZ7XRADM79XV","name":"M","sections":[]}""");
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().BeNull();
     }
@@ -61,7 +61,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
     {
         var provider = RawProvider("""{"smartMenuDto":null}""");
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().BeNull();
     }
@@ -72,7 +72,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
         string body = """{"id":"01F8MECHZX3TBDSZ7XRADM79XV","name":"M","sections":null}""";
         var provider = Provider(body);
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().NotBeNull();
         result!.Sections.Should().BeEmpty();
@@ -88,7 +88,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
         """;
         var provider = Provider(body);
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().NotBeNull();
         result!.Sections.Should().ContainSingle();
@@ -107,7 +107,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
         """;
         var provider = Provider(body);
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().NotBeNull();
         result!.Sections[0].Items[0].SubItems.Should().BeEmpty();
@@ -119,7 +119,7 @@ public sealed class HttpMenuDataProviderRobustnessTests
         string body = """{"id":"01F8MECHZX3TBDSZ7XRADM79XV","name":"M","sections":[]}""";
         var provider = Provider(body);
 
-        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), CancellationToken.None);
+        var result = await provider.GetMenuSnapshotAsync(Ulid.NewUlid(), Ulid.NewUlid(), null, CancellationToken.None);
 
         result.Should().NotBeNull();
         result!.Sections.Should().BeEmpty();
