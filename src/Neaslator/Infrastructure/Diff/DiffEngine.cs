@@ -12,6 +12,21 @@ public static class DiffEngine
     {
         List<TranslationUnit> units = [];
 
+        // The menu's own title and description, before any section.
+        //
+        // These were absent from the snapshot entirely, so they were never diffed, never sent to a
+        // provider, and had nothing to assemble into the completed event. A menu translated into
+        // twenty-nine languages kept its source title in all of them while its sections were
+        // correctly translated — and coverage reported complete, truthfully, because the title had
+        // never been one of the units it counted.
+        //
+        // Handled outside the two branches below because the rule is the same either way: emit when
+        // the text differs from the previous snapshot, or when there is no previous snapshot. A
+        // first snapshot taken before MenuSnapshot carried these fields deserialises with an empty
+        // Name, so the first run after this change sees "" -> "Mezeler" and translates it, which is
+        // exactly the backfill every existing menu needs.
+        AddMenuUnits(units, currentSnapshot, previousSnapshot);
+
         if (previousSnapshot is null)
         {
             foreach (SectionSnapshot section in currentSnapshot.Sections)
@@ -116,6 +131,55 @@ public static class DiffEngine
         }
 
         return units;
+    }
+
+    /// <summary>Emits units for the menu's own title and description when they have changed.</summary>
+    /// <remarks>
+    /// Both ids are <see cref="Ulid.Empty"/>. The menu is not inside a section and is not an item,
+    /// and the assembly step keys off <see cref="TranslationUnitType"/> rather than the ids, so
+    /// inventing a synthetic id would be a value nothing reads and something a future reader would
+    /// have to disprove.
+    /// </remarks>
+    private static void AddMenuUnits(
+        List<TranslationUnit> units,
+        MenuSnapshot current,
+        MenuSnapshot? previous)
+    {
+        if (!current.DoNotTranslateName && !string.IsNullOrWhiteSpace(current.Name))
+        {
+            string normalized = TextNormalizer.Normalize(current.Name);
+            string previousNormalized = TextNormalizer.Normalize(previous?.Name ?? "");
+
+            if (!normalized.Equals(previousNormalized, StringComparison.Ordinal))
+            {
+                units.Add(new TranslationUnit
+                {
+                    SourceHash = TranslationHasher.ComputeHash(normalized),
+                    NormalizedSourceText = normalized,
+                    UnitType = TranslationUnitType.MenuName,
+                    ParentSectionId = Ulid.Empty,
+                    ItemId = Ulid.Empty
+                });
+            }
+        }
+
+        if (!current.DoNotTranslateDescription && !string.IsNullOrWhiteSpace(current.Description))
+        {
+            string normalized = TextNormalizer.Normalize(current.Description.AsSpan());
+            string previousNormalized = TextNormalizer.Normalize((previous?.Description ?? "").AsSpan());
+
+            if (!normalized.Equals(previousNormalized, StringComparison.Ordinal))
+            {
+                units.Add(new TranslationUnit
+                {
+                    SourceHash = TranslationHasher.ComputeHash(normalized),
+                    NormalizedSourceText = normalized,
+                    UnitType = TranslationUnitType.MenuDescription,
+                    ParentSectionId = Ulid.Empty,
+                    ItemId = Ulid.Empty
+                });
+            }
+        }
     }
 
     private static void AddSectionUnit(List<TranslationUnit> units, SectionSnapshot section)

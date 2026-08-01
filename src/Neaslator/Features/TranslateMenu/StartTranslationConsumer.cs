@@ -141,6 +141,25 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
             {
                 foreach (LanguageResult langResult in result.Results.Where(r => r.IsSuccess))
                 {
+                    // The menu's own title and description, looked up exactly like every other
+                    // string: normalise, hash, ask the cache. They were absent from this assembly
+                    // entirely, so TranslatedMenuLanguage carried only sections and the consumer
+                    // downstream had no choice but to store the source title against all 29 target
+                    // languages.
+                    //
+                    // A miss leaves the field null rather than falling back to the source text. The
+                    // fallbacks below do fall back, because a section with no name renders as a gap
+                    // in the menu; a null title means "nothing new for this field", which lets the
+                    // consumer keep what it already has instead of overwriting a translation an
+                    // owner may have corrected by hand with the untranslated original.
+                    string? translatedMenuName =
+                        await LookupOrNullAsync(currentSnapshot.Name, command.SourceLanguageCode,
+                            langResult.TargetLanguageCode, context.CancellationToken);
+
+                    string? translatedMenuDescription =
+                        await LookupOrNullAsync(currentSnapshot.Description, command.SourceLanguageCode,
+                            langResult.TargetLanguageCode, context.CancellationToken);
+
                     List<TranslatedSectionData> translatedSections = [];
                     foreach (SectionSnapshot section in currentSnapshot.Sections)
                     {
@@ -211,7 +230,13 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                         }
                         translatedSections.Add(new TranslatedSectionData { SectionId = section.Id, TranslatedName = translatedSectionName, Items = translatedItems });
                     }
-                    translatedMenus.Add(new TranslatedMenuLanguage { LanguageCode = langResult.TargetLanguageCode, Sections = translatedSections });
+                    translatedMenus.Add(new TranslatedMenuLanguage
+                    {
+                        LanguageCode = langResult.TargetLanguageCode,
+                        TranslatedName = translatedMenuName,
+                        TranslatedDescription = translatedMenuDescription,
+                        Sections = translatedSections,
+                    });
                 }
                 assembleActivity?.SetTag("neaslator.assembled_languages", translatedMenus.Count);
             }
@@ -306,5 +331,37 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// The translation of <paramref name="sourceText"/>, or null when there is not one.
+    /// </summary>
+    /// <remarks>
+    /// Null rather than the source text, which is the opposite of what the section and item lookups
+    /// do — and deliberately so. A section or item with no name renders as a visible gap, so falling
+    /// back to the original is the lesser harm there. The menu title is a single field on a record
+    /// whose null already means "no news", and a downstream consumer that receives the source text
+    /// cannot tell it apart from a genuine translation that happens to be identical. It would then
+    /// overwrite whatever is stored — including a correction an owner made by hand.
+    /// </remarks>
+    private async Task<string?> LookupOrNullAsync(
+        string? sourceText,
+        string sourceLanguageCode,
+        string targetLanguageCode,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(sourceText))
+        {
+            return null;
+        }
+
+        string normalized = TextNormalizer.Normalize(sourceText.AsSpan());
+        long hash = TranslationHasher.ComputeHash(normalized);
+
+        IReadOnlyList<CacheLookupResult> lookup = await _cache
+            .LookupAsync(hash, normalized, sourceLanguageCode, [targetLanguageCode], cancellationToken)
+            .ConfigureAwait(false);
+
+        return lookup.FirstOrDefault(r => r.Translation is not null)?.Translation?.TranslatedText;
     }
 }

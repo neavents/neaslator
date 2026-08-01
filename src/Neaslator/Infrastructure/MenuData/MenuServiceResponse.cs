@@ -21,6 +21,18 @@ internal sealed record MenuServiceResponse
     [JsonPropertyName("name")]
     public string Name { get; init; } = "";
 
+    // The menu's own description and its two opt-out flags. All three are on SmartMenuDto and have
+    // been since before this service existed — they were simply never read here, so the menu's title
+    // was not part of any snapshot and therefore never translated.
+    [JsonPropertyName("description")]
+    public string? Description { get; init; }
+
+    [JsonPropertyName("doNotTranslateName")]
+    public bool DoNotTranslateName { get; init; }
+
+    [JsonPropertyName("doNotTranslateDescription")]
+    public bool DoNotTranslateDescription { get; init; }
+
     [JsonPropertyName("sections")]
     public IReadOnlyList<MenuSectionResponse> Sections { get; init; } = [];
 }

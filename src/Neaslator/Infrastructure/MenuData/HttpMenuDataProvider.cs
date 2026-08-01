@@ -55,6 +55,14 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
 
         return new MenuSnapshot
         {
+            // The menu's own title and description. Everything below this was already carried; these
+            // four lines are the whole reason a menu's title was identical in all twenty-nine
+            // languages while its sections were correctly translated.
+            Name = menuData.Name,
+            Description = menuData.Description,
+            DoNotTranslateName = menuData.DoNotTranslateName,
+            DoNotTranslateDescription = menuData.DoNotTranslateDescription,
+
             // Collections are null-coalesced: System.Text.Json overwrites the record's
             // default initializer when the JSON contains an explicit null, so an upstream
             // "sections": null (or null items/subItems) must not crash the consumer.

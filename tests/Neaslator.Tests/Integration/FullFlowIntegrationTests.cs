@@ -232,12 +232,25 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         fr.Sections[0].Items[0].TranslatedName.Should().Be("[fr] Soup");
         fr.Sections[0].Items[0].TranslatedDescription.Should().Be("[fr] Tomato soup");
 
+        // The menu's own title, which was not translated at all until contracts 1.24.0.
+        //
+        // MenuSnapshot carried only Sections, so the title was never a translation unit: not
+        // diffed, not sent to a provider, and absent from this event. Consumers stored the source
+        // text against every target language, so a menu translated into 29 languages showed one
+        // title in all of them while its sections were correctly translated — and coverage reported
+        // complete, truthfully, because the title had never been counted.
+        fr.TranslatedName.Should().Be("[fr] Menu");
+
         _echo.CallCount.Should().BeGreaterThan(0, "cache was empty, so the provider was invoked");
 
-        // Real PostgreSQL: 3 source units (section, name, description) x 2 languages = 6 rows.
+        // Real PostgreSQL: 4 source units x 2 languages = 8 rows.
+        //
+        // Four, not three. The menu title joined the section name, the item name and the item
+        // description. The stub menu has no description of its own, so that is the only new unit —
+        // a menu with one would make it five.
         await using (NeaslatorDbContext db = NewContext())
         {
-            (await db.TranslationMemory.CountAsync()).Should().Be(6);
+            (await db.TranslationMemory.CountAsync()).Should().Be(8);
             (await db.MenuPublishSnapshots.CountAsync(s => s.MenuId == menu1)).Should().Be(1);
         }
 
@@ -266,10 +279,20 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         _echo.CallCount.Should().Be(callsAfterRun1,
             "identical text across a different menu must be served entirely from the global translation memory");
 
-        // No new memory rows were written; only a second snapshot row was added.
+        // The menu title is served from the global memory too, not re-translated.
+        //
+        // It is the same string ("Menu") on a different menu owned by a different tenant, which is
+        // the whole point of a global translation memory keyed by text rather than by menu. Asserted
+        // because the title reaches the provider through a different code path from the section and
+        // item text, and a title that missed the cache would still have produced the right output
+        // here — just at the cost of an LLM call per menu, forever.
+        evt2.TranslatedMenus.Single(m => m.LanguageCode == "fr").TranslatedName.Should().Be("[fr] Menu");
+
+        // No new memory rows were written; only a second snapshot row was added. Eight, not six —
+        // the menu title became a fourth unit in run 1, and this run adds none.
         await using (NeaslatorDbContext db = NewContext())
         {
-            (await db.TranslationMemory.CountAsync()).Should().Be(6);
+            (await db.TranslationMemory.CountAsync()).Should().Be(8);
             (await db.MenuPublishSnapshots.CountAsync()).Should().Be(2);
         }
     }
