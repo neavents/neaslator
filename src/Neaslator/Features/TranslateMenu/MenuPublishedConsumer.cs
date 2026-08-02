@@ -74,6 +74,18 @@ public sealed class MenuPublishedConsumer : IConsumer<MenuPublishedEvent>
             {
                 MenuId = context.Message.MenuId,
                 OwnerId = context.Message.OwnerId,
+                // Carried across, which it was not.
+                //
+                // StartTranslationCommand has had this field since the owner/tenant split was fixed,
+                // and GetMenuSnapshotAsync has always passed it to the fetch — but nothing copied it
+                // off the event here, so it was null on every run and the provider fell back to the
+                // owner. menu-service filters by tenant, the filter matched nothing, and the fetch
+                // answered 404: "Failed to retrieve menu snapshot" on every publish of every menu
+                // whose owner is not its tenant.
+                //
+                // Both ends of this were correct. Only the copy was missing, which is why the fix
+                // for the owner/tenant split appeared to be in place and changed nothing.
+                TenantId = context.Message.TenantId,
                 SourceLanguageCode = context.Message.SourceLanguageCode,
                 VenueType = context.Message.VenueType,
                 CuisineType = context.Message.CuisineType,
