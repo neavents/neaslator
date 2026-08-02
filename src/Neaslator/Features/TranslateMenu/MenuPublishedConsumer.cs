@@ -68,34 +68,40 @@ public sealed class MenuPublishedConsumer : IConsumer<MenuPublishedEvent>
                 new("debounce_window_seconds", _debounceWindow.TotalSeconds)
             ])));
 
-        await context.SchedulePublish(
-            _debounceWindow,
-            new StartTranslationCommand
-            {
-                MenuId = context.Message.MenuId,
-                OwnerId = context.Message.OwnerId,
-                // Carried across, which it was not.
-                //
-                // StartTranslationCommand has had this field since the owner/tenant split was fixed,
-                // and GetMenuSnapshotAsync has always passed it to the fetch — but nothing copied it
-                // off the event here, so it was null on every run and the provider fell back to the
-                // owner. menu-service filters by tenant, the filter matched nothing, and the fetch
-                // answered 404: "Failed to retrieve menu snapshot" on every publish of every menu
-                // whose owner is not its tenant.
-                //
-                // Both ends of this were correct. Only the copy was missing, which is why the fix
-                // for the owner/tenant split appeared to be in place and changed nothing.
-                TenantId = context.Message.TenantId,
-                SourceLanguageCode = context.Message.SourceLanguageCode,
-                VenueType = context.Message.VenueType,
-                CuisineType = context.Message.CuisineType,
-                TriggeredAt = context.Message.PublishedAt
-            });
+        await context.SchedulePublish(_debounceWindow, StartTranslationCommand.From(context.Message));
     }
 }
 
 public sealed record StartTranslationCommand
 {
+    /// <summary>
+    /// Builds the command from the event that triggered it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A named function rather than an object initialiser inside the consumer, because this mapping
+    /// is a seam and the seam is what broke. <c>TenantId</c> existed on the event, on this command,
+    /// and at the fetch that needs it — and was simply never copied here. Every end was individually
+    /// correct, so nothing failed to compile and no assertion anywhere went red; translation just
+    /// stopped working for every menu whose owner was not its tenant.
+    /// </para>
+    /// <para>
+    /// Pulled out so a test can assert the mapping directly. The consumer's own output goes through
+    /// <c>SchedulePublish</c>, an extension method that cannot be substituted, which is a large part
+    /// of why this was never covered.
+    /// </para>
+    /// </remarks>
+    public static StartTranslationCommand From(MenuPublishedEvent message) => new()
+    {
+        MenuId = message.MenuId,
+        OwnerId = message.OwnerId,
+        TenantId = message.TenantId,
+        SourceLanguageCode = message.SourceLanguageCode,
+        VenueType = message.VenueType,
+        CuisineType = message.CuisineType,
+        TriggeredAt = message.PublishedAt,
+    };
+
     public required Ulid MenuId { get; init; }
     public required Ulid OwnerId { get; init; }
 
