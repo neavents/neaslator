@@ -71,7 +71,7 @@ public sealed class TranslationRouterCostTests
     }
 
     private static TranslationRouter Router(ITranslationProvider provider, ILogger<TranslationRouter> logger) =>
-        new([new ProviderRegistration { Provider = provider, Pipeline = ResiliencePipeline.Empty }], logger);
+        new([new ProviderRegistration { Provider = provider, Pipeline = ResiliencePipeline<TranslationBatchResult>.Empty }], logger);
 
     private static TranslationBatchRequest Request() => new()
     {

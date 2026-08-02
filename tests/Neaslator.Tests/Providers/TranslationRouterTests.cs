@@ -69,7 +69,7 @@ public sealed class TranslationRouterTests
         return new ProviderRegistration
         {
             Provider = provider,
-            Pipeline = ResiliencePipeline.Empty,
+            Pipeline = ResiliencePipeline<TranslationBatchResult>.Empty,
             IsAvailable = isAvailable
         };
     }
@@ -112,8 +112,16 @@ public sealed class TranslationRouterTests
 
         Func<Task> act = async () => await router.TranslateAsync(CreateRequest(), CancellationToken.None);
 
+        // The wording changed deliberately, and the assertion is stronger for it.
+        //
+        // This used to pin "All translation providers exhausted", which is what every caller and
+        // every log reader saw when a response simply failed to parse. It reads as quota, credit or
+        // rate limiting, and it was read that way for a whole session while DeepSeek was returning
+        // HTTP 200 in under a second. "Exhausted" describes the router giving up, never the
+        // provider's state — so the provider's actual error now has to be in the message.
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*All translation providers exhausted*");
+            .WithMessage("*All translation providers failed*")
+            .WithMessage("*Provider error*");
     }
 
     [Fact]
@@ -223,8 +231,11 @@ public sealed class TranslationRouterTests
 
         Func<Task> act = async () => await router.TranslateAsync(CreateRequest(), CancellationToken.None);
 
+        // Nothing was attempted, so there is no provider error to report — and the message must say
+        // that rather than implying a provider was tried and failed.
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*All translation providers exhausted*");
+            .WithMessage("*All translation providers failed*")
+            .WithMessage("*no provider was available*");
     }
 
     [Fact]

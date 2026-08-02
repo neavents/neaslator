@@ -43,13 +43,26 @@ builder.Services.AddHttpClient<ITranslationProvider, DeepSeekProvider>(client =>
         $"Bearer {Environment.GetEnvironmentVariable("NEASLATOR_DEEPSEEK_API_KEY")}");
 });
 
-builder.Services.AddKeyedSingleton<ResiliencePipeline>("provider-pipeline", (sp, key) =>
-    new ResiliencePipelineBuilder()
-        .AddRetry(new RetryStrategyOptions
+// Typed on TranslationBatchResult, which is the whole reason the retry now does anything.
+//
+// A bare ResiliencePipeline retries thrown exceptions. The provider does not throw for the failure
+// that actually occurs in production: a model response in an envelope we did not expect comes back
+// as IsSuccess = false. So this looked like two retries with exponential backoff and was, for the
+// dominant failure mode, no retry at all — one bad response permanently failed that language.
+//
+// ShouldHandle below covers exactly the outcomes a second attempt can fix. A malformed response is
+// nondeterministic — the same call succeeded ~92% of the time when measured against the live API —
+// so retrying converts most of those failures into translations.
+builder.Services.AddKeyedSingleton<ResiliencePipeline<TranslationBatchResult>>("provider-pipeline", (sp, key) =>
+    new ResiliencePipelineBuilder<TranslationBatchResult>()
+        .AddRetry(new RetryStrategyOptions<TranslationBatchResult>
         {
             MaxRetryAttempts = 2,
             BackoffType = DelayBackoffType.Exponential,
-            UseJitter = true
+            UseJitter = true,
+            ShouldHandle = new PredicateBuilder<TranslationBatchResult>()
+                .Handle<Exception>(ex => ex is not OperationCanceledException)
+                .HandleResult(static result => !result.IsSuccess && result.IsRetryable)
         })
         .AddTimeout(new TimeoutStrategyOptions
         {
@@ -60,7 +73,8 @@ builder.Services.AddKeyedSingleton<ResiliencePipeline>("provider-pipeline", (sp,
 builder.Services.AddScoped<TranslationRouter>(sp =>
 {
     ITranslationProvider provider = sp.GetRequiredService<ITranslationProvider>();
-    ResiliencePipeline pipeline = sp.GetRequiredKeyedService<ResiliencePipeline>("provider-pipeline");
+    ResiliencePipeline<TranslationBatchResult> pipeline =
+        sp.GetRequiredKeyedService<ResiliencePipeline<TranslationBatchResult>>("provider-pipeline");
     ProviderRegistration[] registrations = [new() { Provider = provider, Pipeline = pipeline }];
     return new TranslationRouter(registrations, sp.GetRequiredService<ILogger<TranslationRouter>>());
 });

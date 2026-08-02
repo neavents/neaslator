@@ -38,6 +38,7 @@ public sealed class TranslationRouter : ITranslationRouter
         activity?.SetTag("neaslator.provider_chain_length", _providerChain.Count);
 
         List<string> attempted = [];
+        string? lastError = null;
         int skippedCount = 0;
 
         foreach (ProviderRegistration registration in _providerChain)
@@ -115,6 +116,7 @@ public sealed class TranslationRouter : ITranslationRouter
                         new("latency_ms", sw.Elapsed.TotalMilliseconds)
                     ])));
 
+                lastError = result.ErrorMessage;
                 _logger.LogWarning("Provider {Provider} returned failure: {Error}",
                     registration.Provider.ProviderName, result.ErrorMessage);
             }
@@ -125,6 +127,7 @@ public sealed class TranslationRouter : ITranslationRouter
                         new("provider", registration.Provider.ProviderName),
                         new("exception_type", bce.GetType().Name)
                     ])));
+                lastError = $"circuit breaker open ({bce.GetType().Name})";
                 _logger.LogWarning("Circuit breaker opened for {Provider}",
                     registration.Provider.ProviderName);
             }
@@ -135,6 +138,7 @@ public sealed class TranslationRouter : ITranslationRouter
                         new("provider", registration.Provider.ProviderName),
                         new("retry_after_ms", rle.RetryAfter?.TotalMilliseconds ?? -1)
                     ])));
+                lastError = "rate limiter rejected the call locally";
                 _logger.LogWarning("Rate limiter rejected for {Provider}",
                     registration.Provider.ProviderName);
             }
@@ -145,8 +149,20 @@ public sealed class TranslationRouter : ITranslationRouter
         activity?.SetTag("neaslator.providers_skipped", skippedCount);
         activity?.SetTag("neaslator.all_providers_exhausted", true);
 
+        // The reason goes in the message, and it is not a detail.
+        //
+        // This used to say only "All translation providers exhausted. Attempted: [deepseek]". Every
+        // caller — and every human reading a caller's logs — reasonably took that to mean the account
+        // had run out: quota, credit, rate limit. It was read that way for an entire session while
+        // the actual cause was a response we could not parse, on a call that returned HTTP 200 in
+        // under a second. "Exhausted" describes the router giving up, never the provider's state, and
+        // without the last error there is nothing to tell the two apart.
+        string reason = lastError is null
+            ? "no provider was available to attempt"
+            : $"last error: {lastError}";
+
         throw new InvalidOperationException(
-            $"All translation providers exhausted. Attempted: [{string.Join(", ", attempted)}]");
+            $"All translation providers failed. Attempted: [{string.Join(", ", attempted)}] — {reason}");
     }
 
     private static void RecordCostEstimate(string providerName, TokenUsage usage)

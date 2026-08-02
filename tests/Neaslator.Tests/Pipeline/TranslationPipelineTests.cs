@@ -52,7 +52,7 @@ public sealed class TranslationPipelineTests : IDisposable
 
         ProviderRegistration[] registrations =
         [
-            new() { Provider = _mockProvider, Pipeline = ResiliencePipeline.Empty }
+            new() { Provider = _mockProvider, Pipeline = ResiliencePipeline<TranslationBatchResult>.Empty }
         ];
         TranslationRouter router = new(registrations, Substitute.For<ILogger<TranslationRouter>>());
 

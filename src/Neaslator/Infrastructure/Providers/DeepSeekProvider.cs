@@ -87,6 +87,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                 Translations = [],
                 TokenUsage = new(0, 0, 0),
                 ErrorMessage = $"HTTP request failed: {ex.Message}",
+                IsRetryable = true,
                 Latency = sw.Elapsed
             };
         }
@@ -112,6 +113,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                 Translations = [],
                 TokenUsage = tokenUsage,
                 ErrorMessage = "Empty response from provider",
+                IsRetryable = true,
                 Latency = sw.Elapsed
             };
         }
@@ -131,18 +133,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
         List<LlmTranslatedItem>? items;
         try
         {
-            if (cleaned.StartsWith('{'))
-            {
-                using JsonDocument doc = JsonDocument.Parse(cleaned);
-                if (doc.RootElement.TryGetProperty("translations", out JsonElement arr))
-                    items = JsonSerializer.Deserialize<List<LlmTranslatedItem>>(arr.GetRawText());
-                else
-                    items = JsonSerializer.Deserialize<List<LlmTranslatedItem>>("[" + cleaned + "]");
-            }
-            else
-            {
-                items = JsonSerializer.Deserialize<List<LlmTranslatedItem>>(cleaned);
-            }
+            items = ExtractItems(cleaned);
         }
         catch (JsonException ex)
         {
@@ -163,6 +154,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                 Translations = [],
                 TokenUsage = tokenUsage,
                 ErrorMessage = $"JSON parse failed: {ex.Message}",
+                IsRetryable = true,
                 Latency = sw.Elapsed
             };
         }
@@ -182,6 +174,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                 Translations = [],
                 TokenUsage = tokenUsage,
                 ErrorMessage = errorMsg,
+                IsRetryable = true,
                 Latency = sw.Elapsed
             };
         }
@@ -204,6 +197,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                     Translations = [],
                     TokenUsage = tokenUsage,
                     ErrorMessage = errorMsg,
+                IsRetryable = true,
                     Latency = sw.Elapsed
                 };
             }
@@ -220,6 +214,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                     Translations = [],
                     TokenUsage = tokenUsage,
                     ErrorMessage = errorMsg,
+                IsRetryable = true,
                     Latency = sw.Elapsed
                 };
             }
@@ -236,6 +231,7 @@ public sealed class DeepSeekProvider : ITranslationProvider
                     Translations = [],
                     TokenUsage = tokenUsage,
                     ErrorMessage = errorMsg,
+                IsRetryable = true,
                     Latency = sw.Elapsed
                 };
             }
@@ -291,6 +287,84 @@ public sealed class DeepSeekProvider : ITranslationProvider
             return false;
         }
     }
+
+    /// <summary>
+    /// Pulls the translated items out of whatever envelope the model chose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A model is not a schema. Asked for a list, it may return a bare array, the array under a key
+    /// it invented, or — for a single item — the object on its own. All three are reasonable readings
+    /// of the instruction, and all three carry the translation we paid for.
+    /// </para>
+    /// <para>
+    /// <b>What this replaces was worse than a missing case: it was a silent one.</b> Any object
+    /// without a <c>translations</c> key was wrapped as <c>"[" + json + "]"</c>, which deserializes
+    /// <i>successfully</i> into one item with every field defaulted — hash <c>0</c>, name
+    /// <c>null</c>. For a single-item request the count check then passed, and the run died on
+    /// "Unexpected hash 0" with the real translation sitting untouched inside the envelope. 8% of
+    /// live single-item calls hit this, concentrated in particular target languages, so those
+    /// language/text pairs failed on every retry forever while the error blamed the provider.
+    /// </para>
+    /// <para>
+    /// Returning null means "no list found here" and is reported as a malformed response — which is
+    /// retried. Nothing is ever synthesised: an item that cannot be read is an error, never a
+    /// default-constructed row.
+    /// </para>
+    /// </remarks>
+    private static List<LlmTranslatedItem>? ExtractItems(string cleaned)
+    {
+        if (cleaned.StartsWith('['))
+            return JsonSerializer.Deserialize<List<LlmTranslatedItem>>(cleaned);
+
+        // Not JSON at all — prose, a refusal, a truncated stream. Deserializing it throws, and the
+        // caller reports "JSON parse failed", which names the problem. Returning null here instead
+        // would surface as "expected 1 items, got 0": true, useless, and indistinguishable from a
+        // model that answered correctly with nothing in it. That flattening of one failure into
+        // another is the whole reason this method exists.
+        if (!cleaned.StartsWith('{'))
+            return JsonSerializer.Deserialize<List<LlmTranslatedItem>>(cleaned);
+
+        using JsonDocument doc = JsonDocument.Parse(cleaned);
+        JsonElement root = doc.RootElement;
+
+        // The envelope we now ask for, and the one the model reaches for unprompted most often.
+        foreach (string name in KnownEnvelopeNames)
+        {
+            if (root.TryGetProperty(name, out JsonElement named) && named.ValueKind == JsonValueKind.Array)
+                return JsonSerializer.Deserialize<List<LlmTranslatedItem>>(named.GetRawText());
+        }
+
+        // An envelope under some other key. Taking the only array of objects present is unambiguous:
+        // if there is exactly one, it is the list, whatever the model decided to call it.
+        JsonElement? soleArray = null;
+        foreach (JsonProperty property in root.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Array) continue;
+            if (property.Value.GetArrayLength() > 0
+                && property.Value[0].ValueKind != JsonValueKind.Object) continue;
+
+            if (soleArray is not null) return null;   // ambiguous — refuse rather than guess
+            soleArray = property.Value;
+        }
+
+        if (soleArray is { } array)
+            return JsonSerializer.Deserialize<List<LlmTranslatedItem>>(array.GetRawText());
+
+        // A single item returned on its own. Only accepted when it actually looks like one, so a
+        // stray object can never become a phantom row.
+        if (root.TryGetProperty("hash", out _) && root.TryGetProperty("translated_name", out _))
+        {
+            LlmTranslatedItem? single = JsonSerializer.Deserialize<LlmTranslatedItem>(cleaned);
+            return single is null ? null : [single];
+        }
+
+        return null;
+    }
+
+    /// <summary>Envelope keys seen in the wild, plus the one the prompt now asks for.</summary>
+    private static readonly string[] KnownEnvelopeNames =
+        ["translations", "items", "results", "data", "menu_items"];
 
     private static TokenUsage ExtractTokenUsage(DeepSeekChatResponse? response)
     {

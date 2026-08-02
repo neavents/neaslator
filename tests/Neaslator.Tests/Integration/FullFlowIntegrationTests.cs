@@ -75,7 +75,7 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         services.AddScoped<ITranslationCache>(sp => sp.GetRequiredService<TranslationCache>());
         services.AddSingleton<ITranslationProvider>(_echo);
         services.AddScoped<ITranslationRouter>(sp => new TranslationRouter(
-            [new ProviderRegistration { Provider = sp.GetRequiredService<ITranslationProvider>(), Pipeline = ResiliencePipeline.Empty }],
+            [new ProviderRegistration { Provider = sp.GetRequiredService<ITranslationProvider>(), Pipeline = ResiliencePipeline<TranslationBatchResult>.Empty }],
             sp.GetRequiredService<ILogger<TranslationRouter>>()));
         services.AddScoped<TranslationPipeline>();
         services.AddHttpClient<IMenuDataProvider, HttpMenuDataProvider>(c => c.BaseAddress = new Uri(_menuService.Url!));

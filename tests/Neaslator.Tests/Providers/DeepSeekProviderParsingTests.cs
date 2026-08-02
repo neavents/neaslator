@@ -225,6 +225,90 @@ public sealed class DeepSeekProviderParsingTests
         result.Translations.Select(t => t.SourceHash).Should().BeEquivalentTo(hashes);
     }
 
+    /// <summary>
+    /// The shape that cost the estate its tag translations.
+    /// </summary>
+    /// <remarks>
+    /// Measured against the live DeepSeek API on 2026-08-02: 8% of single-item calls came back with
+    /// our own request envelope echoed — <c>{"section_name": …, "items": [ … ]}</c> — with a correct
+    /// translation inside. The parser wrapped the whole object as <c>"[" + json + "]"</c>, which
+    /// deserializes <b>successfully</b> into one item with every field defaulted: hash 0, name null.
+    /// The count check then passed, because one item was expected and one item was produced, and the
+    /// run died on "Unexpected hash 0" with the translation sitting untouched in the payload.
+    ///
+    /// Every one of those was paid for and discarded, and because it is concentrated in particular
+    /// target languages, those language/text pairs failed identically on every subsequent run.
+    /// </remarks>
+    [Fact]
+    public async Task RequestEnvelopeEchoedBack_IsReadRatherThanDiscarded()
+    {
+        string content = """{"section_name":"On-Demand","items":[{"hash":100,"translated_name":"Bebas Gluten","translated_description":null}]}""";
+        var provider = CreateProvider(content);
+
+        TranslationBatchResult result = await provider.TranslateBatchAsync(Request(100), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Translations.Should().ContainSingle();
+        result.Translations[0].SourceHash.Should().Be(100);
+        result.Translations[0].TranslatedName.Should().Be("Bebas Gluten");
+    }
+
+    [Fact]
+    public async Task ArrayUnderAnUnexpectedKey_IsStillFound()
+    {
+        // "results" is not a key we asked for. There is exactly one array of objects in the payload,
+        // so which one holds the translations is not a guess.
+        string content = """{"results":[{"hash":7,"translated_name":"Glutensiz"},{"hash":8,"translated_name":"Helal"}]}""";
+        var provider = CreateProvider(content);
+
+        TranslationBatchResult result = await provider.TranslateBatchAsync(Request(7, 8), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Translations.Select(t => t.SourceHash).Should().BeEquivalentTo(new[] { 7L, 8L });
+    }
+
+    [Fact]
+    public async Task TwoCandidateArrays_AreRefusedRatherThanGuessed()
+    {
+        // Ambiguous: picking one would be a coin flip, and picking wrong would store a translation
+        // against the wrong source text — which is worse than failing, because it is invisible.
+        string content = """{"a":[{"hash":1,"translated_name":"x"}],"b":[{"hash":2,"translated_name":"y"}]}""";
+        var provider = CreateProvider(content);
+
+        TranslationBatchResult result = await provider.TranslateBatchAsync(Request(1), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.IsRetryable.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task AnObjectThatIsNotAnItem_NeverBecomesAPhantomRow()
+    {
+        // The old fallback turned ANY object into one default-constructed item. This asserts the
+        // absence of that: an unreadable payload is an error, never a row with hash 0 and no name.
+        string content = """{"status":"ok","message":"done"}""";
+        var provider = CreateProvider(content);
+
+        TranslationBatchResult result = await provider.TranslateBatchAsync(Request(42), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Translations.Should().BeEmpty();
+        result.ErrorMessage.Should().NotContain("Unexpected hash");
+    }
+
+    [Fact]
+    public async Task MalformedResponses_AreMarkedRetryable()
+    {
+        // The retry is typed on this flag. A malformed generation is nondeterministic — the same call
+        // succeeded ~92% of the time live — so not retrying it is what made single failures permanent.
+        var provider = CreateProvider("""{"nonsense":true}""");
+
+        TranslationBatchResult result = await provider.TranslateBatchAsync(Request(1), CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.IsRetryable.Should().BeTrue();
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly HttpStatusCode _status;
