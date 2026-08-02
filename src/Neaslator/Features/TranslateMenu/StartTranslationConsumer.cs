@@ -225,6 +225,13 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                                     ItemId = subItem.Id,
                                     TranslatedName = translatedSubName,
                                     TranslatedDescription = translatedSubDescription,
+                                    // Flattened into the same list on purpose — qrmenu-edge resolves
+                                    // every id through one source map — but SAID so, because the
+                                    // other consumer stores these in a different table with a
+                                    // foreign key. Without the flag it wrote them as dishes, the
+                                    // key rejected them, and the whole menu's translations rolled
+                                    // back: an add-on cost a menu every language it had.
+                                    IsSubItem = true,
                                 });
                             }
                         }
