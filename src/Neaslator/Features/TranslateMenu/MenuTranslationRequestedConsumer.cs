@@ -62,6 +62,17 @@ public sealed class MenuTranslationRequestedConsumer : IConsumer<MenuTranslation
             // which is only correct while owner and tenant are the same id.
             TenantId = message.TenantId,
             SourceLanguageCode = message.SourceLanguageCode,
+
+            // The language the person actually picked. This was dropped: StartTranslationCommand
+            // had no such field, so the request travelled this far and then the pipeline retargeted
+            // every active language instead of the one asked for.
+            TargetLanguageCode = message.TargetLanguageCode,
+
+            // A person pressing Translate wants the MISSING languages produced, not the CHANGED
+            // text — and on an unchanged menu the diff is empty, so the whole chain no-ops while
+            // every layer reports success. See StartTranslationCommand.IgnorePreviousSnapshot.
+            IgnorePreviousSnapshot = true,
+
             VenueType = message.VenueType,
             CuisineType = message.CuisineType,
             TriggeredAt = message.RequestedAt,

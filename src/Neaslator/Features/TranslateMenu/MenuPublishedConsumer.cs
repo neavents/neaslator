@@ -120,6 +120,42 @@ public sealed record StartTranslationCommand
     public Ulid? TenantId { get; init; }
 
     public required string SourceLanguageCode { get; init; }
+
+    /// <summary>
+    /// The single language to produce, or null for "every active language except the source".
+    /// </summary>
+    /// <remarks>
+    /// A publish wants every language and leaves this null. A person pressing Translate picked one
+    /// in the dashboard, and that choice used to be discarded here — <c>MenuTranslationRequested</c>
+    /// carried it and this command had no field to put it in, so the pipeline silently retargeted
+    /// the whole active set.
+    /// </remarks>
+    public string? TargetLanguageCode { get; init; }
+
+    /// <summary>
+    /// Translate the whole menu rather than only what changed since the last run.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The diff is right for a publish: the previous snapshot is a faithful record of what has
+    /// already been translated, so re-translating unchanged text would spend provider quota for
+    /// nothing.
+    /// </para>
+    /// <para>
+    /// It is wrong for an explicit request, and that is the mechanism behind "the toast said it
+    /// worked and nothing appeared". The snapshot is written whether or not any language actually
+    /// completed, so one failed run leaves a current snapshot with no translations behind it —
+    /// after which every press of Translate diffs to zero units and returns "0/0 languages", for
+    /// ever, until somebody edits a dish name.
+    /// </para>
+    /// <para>
+    /// Translating the full snapshot is cheap anyway: the L1/L2 cache answers everything already
+    /// translated, so a repeat run only pays for what is genuinely missing — which is also what
+    /// makes pressing it twice converge when the provider chain exhausts partway through.
+    /// </para>
+    /// </remarks>
+    public bool IgnorePreviousSnapshot { get; init; }
+
     public required string VenueType { get; init; }
     public required string CuisineType { get; init; }
     public required DateTimeOffset TriggeredAt { get; init; }

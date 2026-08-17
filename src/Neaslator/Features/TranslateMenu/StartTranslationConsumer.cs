@@ -82,10 +82,19 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
 
             if (currentSnapshot is null)
             {
-                _logger.LogError("Failed to retrieve menu snapshot for menu {MenuId}", command.MenuId);
+                // Throw, do not return.
+                //
+                // This logged an error and returned, so MassTransit acknowledged the message and it
+                // was never retried or dead-lettered. Every reason the fetch fails is transient or
+                // fixable — menu-service restarting, a missing internal key, the wrong tenant — and
+                // all of them ended as one line in a log nobody was reading, on a request that had
+                // already answered 202 to the person who asked for it.
                 activity?.SetStatus(ActivityStatusCode.Error, "Menu snapshot not found");
                 activity?.AddEvent(new ActivityEvent("menu_snapshot_not_found"));
-                return;
+
+                throw new InvalidOperationException(
+                    $"Could not read menu {command.MenuId} from menu-service (owner {command.OwnerId}, "
+                    + $"tenant {command.TenantId?.ToString() ?? "none"}). Translation cannot start.");
             }
 
             MenuPublishSnapshot? previousSnapshotEntity = await _db.MenuPublishSnapshots
@@ -95,7 +104,17 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                 ? JsonSerializer.Deserialize<MenuSnapshot>(previousSnapshotEntity.SnapshotJson)
                 : null;
 
+            // An explicit request asks for the whole menu, so the diff has nothing to subtract.
+            // See StartTranslationCommand.IgnorePreviousSnapshot for why a diff makes "Translate"
+            // a permanent no-op once a snapshot exists.
+            if (command.IgnorePreviousSnapshot)
+            {
+                previousSnapshot = null;
+            }
+
             activity?.SetTag("neaslator.has_previous_snapshot", previousSnapshot is not null);
+            activity?.SetTag("neaslator.ignore_previous_snapshot", command.IgnorePreviousSnapshot);
+            activity?.SetTag("neaslator.target_language", command.TargetLanguageCode ?? "all");
 
             TranslationPipelineResult result;
             using (Activity? pipelineActivity = NeaslatorActivitySources.Saga.StartActivity("execute_pipeline"))
@@ -106,17 +125,39 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                     command.SourceLanguageCode,
                     command.VenueType,
                     command.CuisineType,
-                    context.CancellationToken);
+                    context.CancellationToken,
+                    command.TargetLanguageCode);
 
                 pipelineActivity?.SetTag("neaslator.result.total", result.TotalLanguages);
                 pipelineActivity?.SetTag("neaslator.result.completed", result.CompletedLanguages);
                 pipelineActivity?.SetTag("neaslator.result.failed", result.FailedLanguages);
             }
 
+            // The snapshot only advances when something actually landed.
+            //
+            // It used to be written unconditionally, right here, whatever the pipeline returned —
+            // so a run that translated nothing still recorded "this text has been dealt with". The
+            // next run diffed against it, found no changes, and returned 0/0. That state is
+            // unrecoverable by pressing the button again, which is exactly the report: the toast is
+            // green, the log says no_changes_detected, and no translation exists.
+            //
+            // A run whose languages all failed leaves the previous snapshot in place, so the next
+            // attempt sees the same work to do.
+            bool anythingLanded = result.CompletedLanguages > 0;
+            activity?.SetTag("neaslator.snapshot_advanced", anythingLanded);
+
             using (Activity? snapshotActivity = NeaslatorActivitySources.Saga.StartActivity("save_snapshot"))
             {
                 string snapshotJson = JsonSerializer.Serialize(currentSnapshot);
-                if (previousSnapshotEntity is not null)
+                if (!anythingLanded)
+                {
+                    snapshotActivity?.SetTag("neaslator.snapshot_action", "skipped");
+                    _logger.LogWarning(
+                        "Translation for menu {MenuId} completed no languages ({Failed} failed of {Total}); "
+                        + "leaving the previous snapshot in place so a retry still has work to do.",
+                        command.MenuId, result.FailedLanguages, result.TotalLanguages);
+                }
+                else if (previousSnapshotEntity is not null)
                 {
                     previousSnapshotEntity.SnapshotJson = snapshotJson;
                     previousSnapshotEntity.PublishedAt = DateTimeOffset.UtcNow;

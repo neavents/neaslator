@@ -41,7 +41,8 @@ public sealed class TranslationPipeline
         string sourceLanguageCode,
         string venueType,
         string cuisineType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? targetLanguageCode = null)
     {
         long pipelineStartTicks = Stopwatch.GetTimestamp();
 
@@ -84,11 +85,30 @@ public sealed class TranslationPipeline
             };
         }
 
+        // Every active language except the source, narrowed to one when the caller named one.
+        //
+        // A publish names none and wants the lot. A person pressing Translate picked a language in
+        // the dashboard, and that choice used to be discarded two hops upstream — so asking for
+        // German re-ran all twenty-nine, which is both surprising and expensive.
+        //
+        // The source is still excluded even when named explicitly: translating a menu into the
+        // language it is already written in produces the same text at provider cost.
         List<SupportedLanguage> targetLanguages = await _db.SupportedLanguages
             .Where(l => l.IsActive && l.Code != sourceLanguageCode)
+            .Where(l => targetLanguageCode == null || l.Code == targetLanguageCode)
             .OrderBy(l => l.SortOrder)
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+
+        if (targetLanguageCode is not null && targetLanguages.Count == 0)
+        {
+            // Named a language that is inactive, unknown, or is the source. Saying so beats
+            // returning 0/0, which is indistinguishable from "there was nothing to translate".
+            _logger.LogWarning(
+                "Requested target language {TargetLanguage} is not an active target for source "
+                + "{SourceLanguage}; nothing to translate.",
+                targetLanguageCode, sourceLanguageCode);
+        }
 
         List<string> targetCodes = targetLanguages.Select(l => l.Code).ToList();
         activity?.SetTag("neaslator.target_languages_count", targetCodes.Count);

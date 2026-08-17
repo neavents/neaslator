@@ -305,8 +305,118 @@ public sealed class StartTranslationConsumerTests
         }
     }
 
+    /// <summary>
+    /// An explicit request translates the whole menu even when nothing has changed.
+    /// </summary>
+    /// <remarks>
+    /// This is the fix for "I pressed Translate, the toast went green, nothing appeared". A person
+    /// pressing the button wants the languages they are MISSING, not the text that has CHANGED —
+    /// and once a snapshot exists, the diff for an unmodified menu is empty for ever.
+    ///
+    /// It is affordable because the cache answers everything already translated: the run only pays
+    /// for what is genuinely absent, which is also what lets a second press finish a run the
+    /// provider chain abandoned partway through.
+    /// </remarks>
     [Fact]
-    public async Task ExistingSnapshotIdenticalToCurrent_NoChanges_UpdatesInPlaceAndReportsZero()
+    public async Task ExplicitRequest_IgnoresThePreviousSnapshotAndTranslatesEverything()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid sectionId = Ulid.NewUlid();
+        Ulid itemId = Ulid.NewUlid();
+        MenuSnapshot snapshot = SingleItemSnapshot(sectionId, itemId);
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>()).Returns(snapshot);
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-explicit-{menuId}");
+        await SeedLanguages(provider, "fr", "de");
+
+        // The snapshot is already current — a publish-triggered run would diff to nothing here.
+        using (IServiceScope seed = provider.CreateScope())
+        {
+            NeaslatorDbContext seedDb = seed.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            seedDb.MenuPublishSnapshots.Add(new MenuPublishSnapshot
+            {
+                MenuId = menuId,
+                OwnerId = ownerId,
+                SnapshotJson = JsonSerializer.Serialize(snapshot),
+                PublishedAt = DateTimeOffset.UtcNow.AddDays(-1)
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId) with { IgnorePreviousSnapshot = true });
+
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            MenuTranslationCompletedEvent evt = harness.Published.Select<MenuTranslationCompletedEvent>().First().Context.Message;
+            evt.TotalLanguages.Should().Be(2, "an explicit request does not subtract a snapshot");
+            evt.CompletedLanguages.Should().Be(2);
+            evt.TranslatedMenus.Should().HaveCount(2);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    /// <summary>
+    /// Naming a target language runs that language and no other.
+    /// </summary>
+    /// <remarks>
+    /// The dashboard has always sent one, and it was discarded in MenuTranslationRequestedConsumer
+    /// because StartTranslationCommand had no field to carry it — so asking for German re-ran every
+    /// active language at provider cost.
+    /// </remarks>
+    [Fact]
+    public async Task ARequestedTargetLanguage_NarrowsTheRunToThatLanguage()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid sectionId = Ulid.NewUlid();
+        Ulid itemId = Ulid.NewUlid();
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
+            .Returns(SingleItemSnapshot(sectionId, itemId));
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-target-{menuId}");
+        await SeedLanguages(provider, "fr", "de");
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId) with { TargetLanguageCode = "de" });
+
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            MenuTranslationCompletedEvent evt = harness.Published.Select<MenuTranslationCompletedEvent>().First().Context.Message;
+            evt.TotalLanguages.Should().Be(1);
+            evt.TranslatedMenus.Should().ContainSingle(m => m.LanguageCode == "de");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    /// <summary>
+    /// A run that completed no languages leaves the previous snapshot exactly where it was.
+    /// </summary>
+    /// <remarks>
+    /// This asserted the opposite — that the timestamp advances — and that is the mechanism behind
+    /// "the toast said it worked and nothing appeared". The snapshot is what the diff subtracts, so
+    /// advancing it on a run that produced nothing records "this text has been dealt with" when it
+    /// has not. Every later press of Translate then diffs to zero and returns 0/0, permanently,
+    /// until somebody edits a dish name.
+    /// </remarks>
+    [Fact]
+    public async Task ExistingSnapshotIdenticalToCurrent_NoChanges_LeavesTheSnapshotAlone()
     {
         Ulid menuId = Ulid.NewUlid();
         Ulid ownerId = Ulid.NewUlid();
@@ -350,12 +460,13 @@ public sealed class StartTranslationConsumerTests
             evt.FailedLanguages.Should().Be(0);
             evt.TranslatedMenus.Should().BeEmpty();
 
-            // The existing row is updated in place (not duplicated) and its timestamp advances.
+            // The existing row is neither duplicated nor touched: nothing was translated, so the
+            // next attempt must still see the same work to do.
             using IServiceScope scope = provider.CreateScope();
             NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
             List<MenuPublishSnapshot> rows = await db.MenuPublishSnapshots.Where(s => s.MenuId == menuId).ToListAsync();
             rows.Should().ContainSingle();
-            rows[0].PublishedAt.Should().BeAfter(seededAt);
+            rows[0].PublishedAt.Should().Be(seededAt);
         }
         finally
         {
