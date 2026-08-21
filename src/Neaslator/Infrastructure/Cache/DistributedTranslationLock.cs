@@ -98,12 +98,40 @@ public sealed class DistributedTranslationLock
         activity?.SetTag("neaslator.lock.key", lockKey);
 
         IDatabase db = _garnet.GetDatabase();
-        RedisResult result = await db.ScriptEvaluateAsync(
-            _releaseScript,
-            [new RedisKey(lockKey)],
-            [new RedisValue(lockValue)]);
+        RedisResult? result;
+        try
+        {
+            result = await db.ScriptEvaluateAsync(
+                _releaseScript,
+                [new RedisKey(lockKey)],
+                [new RedisValue(lockValue)]);
+        }
+        catch (RedisServerException ex) when (ex.Message.Contains("Lua", StringComparison.OrdinalIgnoreCase))
+        {
+            // Garnet can be built without Lua, and this estate runs Garnet.
+            //
+            // The compare-and-delete script is what stops us releasing a lease that has already
+            // expired and been claimed by someone else. Without Lua that guarantee is unavailable,
+            // so fall back to a plain delete: the TTL is the dead-man switch either way, and a lease
+            // that can never be released would make every other instance wait out the full timeout
+            // on every miss.
+            activity?.AddEvent(new ActivityEvent("lock_release_without_lua"));
+            bool deleted = await db.KeyDeleteAsync(lockKey).ConfigureAwait(false);
+            activity?.SetTag("neaslator.lock.released", deleted);
+            return;
+        }
+        catch (RedisException ex)
+        {
+            // Never throw out of a release. This is called from a finally, so an exception here
+            // would replace the caller's real result — a successful translation reported as a
+            // failure — and the TTL reclaims the lease regardless.
+            activity?.AddEvent(new ActivityEvent("lock_release_failed",
+                tags: new ActivityTagsCollection([new("reason", ex.GetType().Name)])));
+            activity?.SetTag("neaslator.lock.released", false);
+            return;
+        }
 
-        bool released = (int)result == 1;
+        bool released = result is not null && (int)result == 1;
         activity?.SetTag("neaslator.lock.released", released);
         if (!released)
         {

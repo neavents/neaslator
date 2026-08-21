@@ -9,6 +9,7 @@ using Neaslator.Infrastructure.Hashing;
 using Neaslator.Infrastructure.Normalization;
 using Neaslator.Infrastructure.Providers;
 using NSubstitute;
+using StackExchange.Redis;
 
 namespace Neaslator.Tests.Endpoints;
 
@@ -22,6 +23,39 @@ public sealed class OnDemandTranslationEndpointTests
 {
     private readonly ITranslationCache _cache = Substitute.For<ITranslationCache>();
     private readonly ITranslationRouter _router = Substitute.For<ITranslationRouter>();
+
+    /// <summary>
+    /// A lock whose acquire always succeeds, so these tests keep exercising the provider path they
+    /// were written for. The lock itself has its own coverage in DistributedTranslationLockTests;
+    /// what matters here is that wiring it in did not change what the endpoint does when it wins
+    /// the lease — which is every one of these cases.
+    /// </summary>
+    private readonly DistributedTranslationLock _translationLock = AlwaysAcquires();
+
+    private static DistributedTranslationLock AlwaysAcquires()
+    {
+        IDatabase db = Substitute.For<IDatabase>();
+        db.StringSetAsync(Arg.Any<RedisKey>(), Arg.Any<RedisValue>(), Arg.Any<TimeSpan?>(), Arg.Any<When>())
+            .Returns(true);
+
+        // Release runs in a finally on every path, and a substitute returns null from
+        // ScriptEvaluateAsync. That null is deliberately left in place: it is what a Garnet built
+        // without Lua looks like, and it caught ReleaseAsync casting the result unguarded — which
+        // would have turned a successful translation into a NullReferenceException.
+        db.ScriptEvaluateAsync(Arg.Any<string>(), Arg.Any<RedisKey[]>(), Arg.Any<RedisValue[]>(), Arg.Any<CommandFlags>())
+            .Returns((RedisResult)null!);
+
+        // Release runs in a finally on every path. A substitute returns null here, which is exactly
+        // what a Garnet without Lua would surface as a failure — and it caught ReleaseAsync casting
+        // the result unguarded, so the null stays.
+        db.ScriptEvaluateAsync(Arg.Any<string>(), Arg.Any<RedisKey[]>(), Arg.Any<RedisValue[]>(), Arg.Any<CommandFlags>())
+            .Returns((RedisResult)null!);
+
+        IConnectionMultiplexer garnet = Substitute.For<IConnectionMultiplexer>();
+        garnet.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(db);
+
+        return new DistributedTranslationLock(garnet);
+    }
     private static readonly IServiceProvider Services = new ServiceCollection().AddLogging().BuildServiceProvider();
 
     private static async Task<(int status, string body)> Execute(IResult result)
@@ -68,7 +102,7 @@ public sealed class OnDemandTranslationEndpointTests
     [InlineData("Soup", "en", "", "TargetLanguageCode is required")]
     public async Task Validation_MissingFields_Returns400(string text, string src, string tgt, string expected)
     {
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(text, src, tgt), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(text, src, tgt), _cache, _router, _translationLock, CancellationToken.None);
         (int status, string body) = await Execute(result);
 
         status.Should().Be(StatusCodes.Status400BadRequest);
@@ -81,7 +115,7 @@ public sealed class OnDemandTranslationEndpointTests
     {
         CacheHit("Izgara Tavuk");
 
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, _translationLock, CancellationToken.None);
         (int status, string body) = await Execute(result);
 
         status.Should().Be(StatusCodes.Status200OK);
@@ -108,7 +142,7 @@ public sealed class OnDemandTranslationEndpointTests
                 ProviderTier = TranslationProviderTier.Primary
             });
 
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, _translationLock, CancellationToken.None);
         (int status, string body) = await Execute(result);
 
         status.Should().Be(StatusCodes.Status200OK);
@@ -131,7 +165,7 @@ public sealed class OnDemandTranslationEndpointTests
                 ErrorMessage = "all providers exhausted"
             });
 
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, _translationLock, CancellationToken.None);
         (int status, string body) = await Execute(result);
 
         status.Should().Be(StatusCodes.Status400BadRequest);
@@ -145,7 +179,7 @@ public sealed class OnDemandTranslationEndpointTests
         _router.TranslateAsync(Arg.Any<TranslationBatchRequest>(), Arg.Any<CancellationToken>())
             .Returns<TranslationBatchResult>(_ => throw new InvalidOperationException("boom-network"));
 
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, _translationLock, CancellationToken.None);
         (int status, string body) = await Execute(result);
 
         status.Should().Be(StatusCodes.Status400BadRequest);
@@ -157,7 +191,7 @@ public sealed class OnDemandTranslationEndpointTests
     {
         CacheHit("Izgara Tavuk");
 
-        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, CancellationToken.None);
+        IResult result = await OnDemandTranslationEndpoint.HandleAsync(Request(), _cache, _router, _translationLock, CancellationToken.None);
         (_, string body) = await Execute(result);
 
         using JsonDocument doc = JsonDocument.Parse(body);

@@ -15,13 +15,15 @@ public static class OnDemandTranslationEndpoint
             OnDemandTranslationRequest request,
             ITranslationCache cache,
             ITranslationRouter router,
-            CancellationToken ct) => HandleAsync(request, cache, router, ct));
+            DistributedTranslationLock translationLock,
+            CancellationToken ct) => HandleAsync(request, cache, router, translationLock, ct));
     }
 
     internal static async Task<IResult> HandleAsync(
         OnDemandTranslationRequest request,
         ITranslationCache cache,
         ITranslationRouter router,
+        DistributedTranslationLock translationLock,
         CancellationToken ct)
     {
         using Activity? activity = NeaslatorActivitySources.OnDemand.StartActivity("OnDemandTranslation");
@@ -91,6 +93,36 @@ public static class OnDemandTranslationEndpoint
         activity?.SetTag("neaslator.on_demand.cache_hit", false);
         activity?.AddEvent(new ActivityEvent("cache_miss"));
 
+        // Nothing stood between a cache miss and the provider.
+        //
+        // DistributedTranslationLock was written for exactly this, registered in DI, and unit
+        // tested — and called from nowhere. Within one process the pipeline's own semaphores keep
+        // duplicate work down; across processes there was nothing, so every instance that missed on
+        // the same text called the provider for it. That is not a correctness bug, it is a bill:
+        // translation is the one thing here that costs real money per call, and the estate's
+        // provider already exhausts partway through large runs.
+        //
+        // On contention the lock waits for whoever holds it to publish the result and hands that
+        // back, so the loser pays a short wait instead of a second API call.
+        LockResult translationLease = await translationLock
+            .TryAcquireAsync(hash, request.TargetLanguageCode, ct);
+
+        if (translationLease.Outcome == LockOutcome.ResolvedByPeer
+            && TryReadPeerTranslation(translationLease.CachedValue) is { } peerText)
+        {
+            double peerLatency = Stopwatch.GetElapsedTime(startTicks).TotalSeconds;
+            activity?.SetTag("neaslator.on_demand.source", "peer");
+            activity?.AddEvent(new ActivityEvent("resolved_by_peer"));
+            NeaslatorMetrics.OnDemandRequestsTotal.Add(1,
+                new KeyValuePair<string, object?>("source", "cache_peer"));
+            NeaslatorMetrics.OnDemandLatencySeconds.Record(peerLatency,
+                new KeyValuePair<string, object?>("source", "cache_peer"));
+
+            return Results.Ok(new OnDemandTranslationResponse(peerText, "PeerResolved", 0));
+        }
+
+        try
+        {
         TranslationBatchRequest batchRequest = new()
         {
             SourceLanguageCode = request.SourceLanguageCode,
@@ -160,6 +192,38 @@ public static class OnDemandTranslationEndpoint
             translated.TranslatedName,
             "provider",
             (int)result.Latency.TotalMilliseconds));
+        }
+        finally
+        {
+            // Released on every path, including the failures above. A lease left held makes every
+            // other instance wait out the full timeout before falling through to the provider —
+            // turning one failed call into a slow one for everybody.
+            if (translationLease.LockKey is { } key && translationLease.LockValue is { } value)
+                await translationLock.ReleaseAsync(key, value);
+        }
+    }
+
+    /// <summary>
+    /// Reads the translation a peer published while we waited on the lock.
+    /// </summary>
+    /// <remarks>
+    /// The lock hands back the raw cache entry, which is a serialised <see cref="CachedTranslation"/>
+    /// rather than a bare string. Returning null on anything unreadable falls through to calling the
+    /// provider — the same outcome as before this existed, which is the right way to fail.
+    /// </remarks>
+    private static string? TryReadPeerTranslation(string? cachedValue)
+    {
+        if (string.IsNullOrWhiteSpace(cachedValue)) return null;
+
+        try
+        {
+            CachedTranslation? cached = System.Text.Json.JsonSerializer.Deserialize<CachedTranslation>(cachedValue);
+            return string.IsNullOrWhiteSpace(cached?.TranslatedText) ? null : cached.TranslatedText;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 }
 
