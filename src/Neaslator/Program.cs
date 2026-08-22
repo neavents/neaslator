@@ -167,7 +167,30 @@ builder.Services.AddHttpClient<IMenuDataProvider, HttpMenuDataProvider>(client =
         client.DefaultRequestHeaders.Add("X-Internal-Key", internalKey);
 });
 
-builder.Services.AddSignalR();
+// SignalR groups are per-SERVER unless a backplane says otherwise, and TranslationNotifier
+// sends exclusively to groups — venue:{ownerId} and menu:{menuId}.
+//
+// So with one replica this works and with two it silently stops: the dashboard connects to
+// whichever pod the load balancer picked and joins its group there, the translation runs on
+// whichever pod took the request, and Clients.Group(...) on that pod finds no members. No
+// error is raised on either side. The progress bar simply never moves, and the run it is
+// reporting on completes normally — which makes it look like a frontend bug.
+//
+// Garnet speaks the Redis protocol and is already a dependency, so the backplane costs
+// nothing new to run. The channel prefix keeps it off media-service's traffic on the same
+// instance; without one, two services' SignalR messages share a namespace.
+builder.Services.AddSignalR()
+    .AddStackExchangeRedis(
+        builder.Configuration.GetConnectionString("Garnet") ?? "localhost:6379",
+        options =>
+        {
+            options.Configuration.ChannelPrefix = RedisChannel.Literal("neavents:neaslator");
+
+            // Do not make startup depend on the cache being up. Without this, a Garnet that is
+            // slow to come up takes the whole service down with it, and translation is useful
+            // long before progress reporting is.
+            options.Configuration.AbortOnConnectFail = false;
+        });
 builder.Services.AddScoped<TranslationNotifier>();
 
 builder.Services.AddHostedService<QualityUpgradeJob>();

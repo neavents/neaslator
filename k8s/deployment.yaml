@@ -85,7 +85,7 @@ spec:
                   name: neavents-platform
                   key: otelEndpoint
                   optional: true
-            - name: ConnectionStrings__Postgres
+            - name: ConnectionStrings__NeaslatorDb
               valueFrom:
                 secretKeyRef:
                   name: neaslator-secrets
@@ -95,6 +95,10 @@ spec:
               value: "garnet:6379"
             - name: RabbitMq__Host
               value: "rabbitmq"
+            - name: RabbitMq__Username
+              value: "guest"
+            - name: RabbitMq__Password
+              value: "guest"
           envFrom:
             - secretRef:
                 name: neaslator-secrets
