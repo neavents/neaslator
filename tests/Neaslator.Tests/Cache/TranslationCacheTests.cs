@@ -16,6 +16,7 @@ public sealed class TranslationCacheTests : UnitTestBase, IDisposable
     private readonly SqliteConnection _connection;
     private readonly IConnectionMultiplexer _garnet;
     private readonly IDatabase _redisDb;
+    private readonly IBatch _batch;
     private readonly NeaslatorDbContext _db;
     private readonly TranslationCache _sut;
 
@@ -26,6 +27,8 @@ public sealed class TranslationCacheTests : UnitTestBase, IDisposable
 
         _garnet = Substitute.For<IConnectionMultiplexer>();
         _redisDb = Substitute.For<IDatabase>();
+        _batch = Substitute.For<IBatch>();
+        _redisDb.CreateBatch(Arg.Any<object>()).Returns(_batch);
         _garnet.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(_redisDb);
 
         var options = new DbContextOptionsBuilder<NeaslatorDbContext>()
@@ -130,8 +133,10 @@ public sealed class TranslationCacheTests : UnitTestBase, IDisposable
         result.Translation.Should().NotBeNull();
         result.Translation!.TranslatedText.Should().Be("Salade Cesar");
 
-        // Verify backfill was triggered
-        var backfillCalls = _redisDb.ReceivedCalls()
+        // Verify backfill was triggered. It goes through a pipelined batch rather than a
+        // multi-key StringSetAsync, because MSET cannot carry an expiry and the keys it wrote
+        // were living in Garnet forever.
+        var backfillCalls = _batch.ReceivedCalls()
             .Where(c => c.GetMethodInfo().Name == "StringSetAsync")
             .ToList();
         backfillCalls.Should().NotBeEmpty();

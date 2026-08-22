@@ -20,6 +20,7 @@ public sealed class TranslationCacheAdvancedTests : IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly IDatabase _redisDb;
+    private readonly IBatch _batch;
     private readonly NeaslatorDbContext _db;
     private readonly TranslationCache _sut;
 
@@ -30,6 +31,8 @@ public sealed class TranslationCacheAdvancedTests : IDisposable
 
         IConnectionMultiplexer garnet = Substitute.For<IConnectionMultiplexer>();
         _redisDb = Substitute.For<IDatabase>();
+        _batch = Substitute.For<IBatch>();
+        _redisDb.CreateBatch(Arg.Any<object>()).Returns(_batch);
         garnet.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(_redisDb);
 
         DbContextOptions<NeaslatorDbContext> options = new DbContextOptionsBuilder<NeaslatorDbContext>()
@@ -47,14 +50,25 @@ public sealed class TranslationCacheAdvancedTests : IDisposable
         _connection.Dispose();
     }
 
+    /// <summary>
+    /// The keys and values the L2 backfill wrote into L1.
+    /// </summary>
+    /// <remarks>
+    /// Read from the pipelined batch rather than from a multi-key StringSetAsync. The backfill
+    /// used to be one MSET, which cannot carry an expiry — so every key it wrote lived in Garnet
+    /// forever. The assertions below are unchanged; only where the writes are observed moved.
+    /// </remarks>
     private KeyValuePair<RedisKey, RedisValue>[] CapturedBackfill()
     {
-        var call = _redisDb.ReceivedCalls().FirstOrDefault(c =>
-            c.GetMethodInfo().Name == "StringSetAsync" &&
-            c.GetArguments().Length > 0 &&
-            c.GetArguments()[0] is KeyValuePair<RedisKey, RedisValue>[]);
-        call.Should().NotBeNull("a backfill StringSetAsync(KeyValuePair[]) call should have been made");
-        return (KeyValuePair<RedisKey, RedisValue>[])call!.GetArguments()[0]!;
+        var writes = _batch.ReceivedCalls()
+            .Where(c => c.GetMethodInfo().Name == "StringSetAsync")
+            .Select(c => c.GetArguments())
+            .Where(a => a.Length >= 2 && a[0] is RedisKey && a[1] is RedisValue)
+            .Select(a => new KeyValuePair<RedisKey, RedisValue>((RedisKey)a[0]!, (RedisValue)a[1]!))
+            .ToArray();
+
+        writes.Should().NotBeEmpty("a backfill should have written the L2 hits into L1");
+        return writes;
     }
 
     private NeaslatorDbContext FreshContext()

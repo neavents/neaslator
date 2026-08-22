@@ -12,6 +12,35 @@ namespace Neaslator.Infrastructure.Cache;
 
 public sealed class TranslationCache : ITranslationCache
 {
+    /// <summary>
+    /// How long an L1 entry lives in Garnet.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// L1 entries were written with no expiry at all, so Garnet accumulated every translation this
+    /// service ever looked up and never gave any of it back. Keys are content-addressed
+    /// (<c>sourceHash:targetLanguage</c>) so nothing here goes stale — but nothing here is ever
+    /// evicted either, and the estate is heading for roughly seventy-five languages across every
+    /// string on every menu.
+    /// </para>
+    /// <para>
+    /// That is not this service's problem alone. Garnet is shared with identity, menu, media,
+    /// subscription and messaging, so an unbounded translation cache does not simply grow — under
+    /// memory pressure it evicts the permission and entitlement entries those services depend on,
+    /// and the symptom surfaces somewhere with no connection to translation at all.
+    /// </para>
+    /// <para>
+    /// Safe because L1 is only an accelerator: the durable copy is <c>TranslationMemory</c> in
+    /// Postgres, which is what the lookup already falls back to when an L1 value is missing or
+    /// corrupt. An expired key costs one indexed read and is backfilled on the way past.
+    /// </para>
+    /// <para>
+    /// Long rather than short, because freshness is not what this bounds — memory is. A hot menu's
+    /// translations are re-backfilled the first time anyone asks after expiry.
+    /// </para>
+    /// </remarks>
+    private static readonly TimeSpan L1Ttl = TimeSpan.FromDays(30);
+
     private readonly IConnectionMultiplexer _garnet;
     private readonly NeaslatorDbContext _db;
 
@@ -142,7 +171,20 @@ public sealed class TranslationCache : ITranslationCache
 
         if (backfill.Count > 0)
         {
-            await db.StringSetAsync([.. backfill]);
+            // A batch rather than the multi-key StringSetAsync overload, which maps to MSET — and
+            // MSET cannot carry an expiry, so every key written that way lived in Garnet forever.
+            // A batch is still one pipelined round trip and each SET carries its own TTL.
+            IBatch batch = db.CreateBatch();
+            List<Task> writes = new(backfill.Count);
+
+            foreach (KeyValuePair<RedisKey, RedisValue> entry in backfill)
+            {
+                writes.Add(batch.StringSetAsync(entry.Key, entry.Value, L1Ttl));
+            }
+
+            batch.Execute();
+            await Task.WhenAll(writes);
+
             NeaslatorMetrics.CacheBackfills.Add(backfill.Count,
                 new KeyValuePair<string, object?>("source_hash", sourceHash.ToString()));
         }
@@ -226,7 +268,8 @@ public sealed class TranslationCache : ITranslationCache
         IDatabase db = _garnet.GetDatabase();
         await db.StringSetAsync(
             $"neaslator:t:{sourceHash}:{targetLanguageCode}",
-            JsonSerializer.Serialize(cached));
+            JsonSerializer.Serialize(cached),
+            L1Ttl);
 
         activity?.AddEvent(new ActivityEvent("l1_cache_populated"));
     }
