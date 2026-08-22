@@ -92,11 +92,19 @@ spec:
             - name: ConnectionStrings__Garnet
               value: "garnet:6379"
             - name: RabbitMq__Host
-              value: "rabbitmq"
+              value: "neavents-rabbit"
             - name: RabbitMq__Username
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: neavents-rabbit-default-user
+                  key: username
+                  optional: true
             - name: RabbitMq__Password
-              value: "guest"
+              valueFrom:
+                secretKeyRef:
+                  name: neavents-rabbit-default-user
+                  key: password
+                  optional: true
           envFrom:
             - secretRef:
                 name: neaslator-secrets
