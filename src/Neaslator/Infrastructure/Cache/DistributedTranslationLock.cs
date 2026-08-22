@@ -111,16 +111,80 @@ public sealed class DistributedTranslationLock
             // Garnet can be built without Lua, and this estate runs Garnet.
             //
             // The compare-and-delete script is what stops us releasing a lease that has already
-            // expired and been claimed by someone else. Without Lua that guarantee is unavailable,
-            // so fall back to a plain delete: the TTL is the dead-man switch either way, and a lease
-            // that can never be released would make every other instance wait out the full timeout
-            // on every miss.
+            // expired or been taken by someone else. Without Lua that atomicity is unavailable —
+            // but an UNCONDITIONAL delete is not the only alternative, and it is the wrong one.
+            // AcquireAsync has a ForcedAcquisition path, so "another holder owns this key" is a
+            // designed state rather than an expiry edge case: deleting blindly hands a second
+            // worker the same menu, and translation is the paid path.
+            //
+            // Read, compare, delete only on a match. Not atomic — the holder could change between
+            // the read and the delete — but that window is microseconds wide instead of always.
+            // The TTL remains the dead-man switch, and a lease that can never be released would
+            // make every other instance wait out the full timeout on every miss, which is why this
+            // does not simply give up.
             activity?.AddEvent(new ActivityEvent("lock_release_without_lua"));
-            bool deleted = await db.KeyDeleteAsync(lockKey).ConfigureAwait(false);
-            activity?.SetTag("neaslator.lock.released", deleted);
+
+            // Its own guard. This path runs inside the handler for a FAILED call, and the read it
+            // adds can fail the same way — an unguarded one would throw out of a release that is
+            // invoked from a finally, turning a successful translation into a reported failure.
+            RedisValue current;
+
+            try
+            {
+                current = await db.StringGetAsync(lockKey).ConfigureAwait(false);
+            }
+            // Deliberately broad. RedisTimeoutException derives from TimeoutException, not from
+            // RedisException, so catching the Redis hierarchy misses the single most likely
+            // failure here. This method's contract is that it never throws; the catch has to be as
+            // wide as that promise.
+            catch (Exception readFailure) when (readFailure is not OperationCanceledException)
+            {
+                activity?.SetTag("neaslator.lock.released", false);
+                activity?.AddEvent(new ActivityEvent("lock_release_failed",
+                    tags: new ActivityTagsCollection([new("reason", readFailure.GetType().Name)])));
+                return;
+            }
+
+            if (current.IsNullOrEmpty)
+            {
+                // Already gone: expired, or released by whoever took it over. Nothing to do, and
+                // nothing wrong.
+                activity?.SetTag("neaslator.lock.released", false);
+                activity?.AddEvent(new ActivityEvent("lock_release_missed",
+                    tags: new ActivityTagsCollection([new("reason", "already_gone")])));
+                return;
+            }
+
+            if (!string.Equals(current.ToString(), lockValue, StringComparison.Ordinal))
+            {
+                // Someone else holds it now. Releasing would be releasing THEIR lease.
+                activity?.SetTag("neaslator.lock.released", false);
+                activity?.AddEvent(new ActivityEvent("lock_release_missed",
+                    tags: new ActivityTagsCollection([new("reason", "held_by_another")])));
+                return;
+            }
+
+            try
+            {
+                bool deleted = await db.KeyDeleteAsync(lockKey).ConfigureAwait(false);
+                activity?.SetTag("neaslator.lock.released", deleted);
+            }
+            catch (Exception deleteFailure) when (deleteFailure is not OperationCanceledException)
+            {
+                activity?.SetTag("neaslator.lock.released", false);
+                activity?.AddEvent(new ActivityEvent("lock_release_failed",
+                    tags: new ActivityTagsCollection([new("reason", deleteFailure.GetType().Name)])));
+            }
+
             return;
         }
-        catch (RedisException ex)
+        // Deliberately broader than RedisException, which is what this used to catch.
+        // RedisTimeoutException derives from TimeoutException and NOT from RedisException —
+        // verified against the assembly, not assumed — so the narrower catch missed the single
+        // most likely failure and let it escape the very guarantee documented below. A timeout
+        // talking to Garnet is exactly the moment a release is called and exactly the moment it
+        // must not throw.
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Never throw out of a release. This is called from a finally, so an exception here
             // would replace the caller's real result — a successful translation reported as a
