@@ -83,6 +83,12 @@ spec:
                   name: neaslator-secrets
                   key: postgres
                   optional: true
+            - name: ConnectionStrings__PostgresDirect
+              valueFrom:
+                secretKeyRef:
+                  name: neaslator-secrets
+                  key: postgresDirect
+                  optional: true
             - name: ConnectionStrings__Garnet
               value: "garnet:6379"
             - name: RabbitMq__Host

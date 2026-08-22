@@ -36,6 +36,14 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
             .UseNpgsql(_postgres.GetConnectionString())
             .Options);
 
+    /// <summary>
+    /// The connection the lock is taken on. One per caller, because one caller stands for one
+    /// replica. The container is reached directly, so the direct string is the pooled string —
+    /// the same fallback the service uses when ConnectionStrings:PostgresDirect is unset.
+    /// </summary>
+    private PostgresDirect Direct() =>
+        PostgresDirect.Create(_postgres.GetConnectionString(), null, "ConnectionStrings:NeaslatorDb");
+
     [Fact]
     public async Task A_second_replica_does_not_run_the_work()
     {
@@ -45,7 +53,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         TaskCompletionSource holding = new();
         TaskCompletionSource release = new();
 
-        Task<bool> first = holder.TryRunWithAdvisoryLockAsync("test:sweep", async _ =>
+        Task<bool> first = holder.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep", async _ =>
         {
             holding.SetResult();
             await release.Task;
@@ -54,7 +62,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         await holding.Task;
 
         bool rivalRan = true;
-        bool secondAcquired = await rival.TryRunWithAdvisoryLockAsync("test:sweep", _ =>
+        bool secondAcquired = await rival.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep", _ =>
         {
             rivalRan = true;
             return Task.CompletedTask;
@@ -77,7 +85,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         TaskCompletionSource holding = new();
         TaskCompletionSource release = new();
 
-        Task<bool> first = holder.TryRunWithAdvisoryLockAsync("test:sweep-2", async _ =>
+        Task<bool> first = holder.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-2", async _ =>
         {
             holding.SetResult();
             await release.Task;
@@ -86,7 +94,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         await holding.Task;
 
         bool ran = false;
-        await rival.TryRunWithAdvisoryLockAsync("test:sweep-2", _ =>
+        await rival.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-2", _ =>
         {
             ran = true;
             return Task.CompletedTask;
@@ -104,10 +112,10 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         await using NeaslatorDbContext first = CreateContext();
         await using NeaslatorDbContext second = CreateContext();
 
-        (await first.TryRunWithAdvisoryLockAsync("test:sweep-3", _ => Task.CompletedTask))
+        (await first.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-3", _ => Task.CompletedTask))
             .Should().BeTrue();
 
-        (await second.TryRunWithAdvisoryLockAsync("test:sweep-3", _ => Task.CompletedTask))
+        (await second.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-3", _ => Task.CompletedTask))
             .Should().BeTrue("otherwise one pass starves the sweep for the life of the deployment");
     }
 
@@ -117,12 +125,11 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         await using NeaslatorDbContext first = CreateContext();
         await using NeaslatorDbContext second = CreateContext();
 
-        Func<Task> throwing = () => first.TryRunWithAdvisoryLockAsync(
-            "test:sweep-4", _ => throw new InvalidOperationException("provider is down"));
+        Func<Task> throwing = () => first.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-4", _ => throw new InvalidOperationException("provider is down"));
 
         await throwing.Should().ThrowAsync<InvalidOperationException>();
 
-        (await second.TryRunWithAdvisoryLockAsync("test:sweep-4", _ => Task.CompletedTask))
+        (await second.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-4", _ => Task.CompletedTask))
             .Should().BeTrue("a failed sweep must not lock every later one out");
     }
 
@@ -135,7 +142,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
         TaskCompletionSource holding = new();
         TaskCompletionSource release = new();
 
-        Task<bool> first = holder.TryRunWithAdvisoryLockAsync("test:sweep-a", async _ =>
+        Task<bool> first = holder.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-a", async _ =>
         {
             holding.SetResult();
             await release.Task;
@@ -143,7 +150,7 @@ public sealed class AdvisoryLockPostgresTests : IAsyncLifetime
 
         await holding.Task;
 
-        (await other.TryRunWithAdvisoryLockAsync("test:sweep-b", _ => Task.CompletedTask))
+        (await other.TryRunWithAdvisoryLockAsync(Direct(), "test:sweep-b", _ => Task.CompletedTask))
             .Should().BeTrue("unrelated work must not wait behind this sweep");
 
         release.SetResult();

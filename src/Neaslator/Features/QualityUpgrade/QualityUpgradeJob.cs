@@ -58,9 +58,17 @@ public sealed class QualityUpgradeJob : BackgroundService
         //
         // Non-blocking: the sweep runs again on its own interval, so a replica that loses should
         // do nothing rather than queue up and fire the moment the lock frees.
+        // GetService, not GetRequiredService: the in-memory contexts the unit tests use are not
+        // relational, and the helper runs the work unguarded there because a private in-process
+        // store has nothing to contend with. A relational context with no PostgresDirect is a
+        // wiring mistake and throws inside the helper rather than silently sweeping on every pod.
+        var direct = scope.ServiceProvider.GetService<PostgresDirect>();
+
         bool ran = await db.TryRunWithAdvisoryLockAsync(
+            direct,
             "neaslator:quality-upgrade",
             token => UpgradeDegradedEntriesCoreAsync(db, router, cache, activity, startTicks, token),
+            _logger,
             ct);
 
         if (!ran)

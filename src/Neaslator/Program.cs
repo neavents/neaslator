@@ -29,6 +29,16 @@ builder.AddNeaslatorLogging();
 builder.Services.AddDbContext<NeaslatorDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("NeaslatorDb")));
 
+// Two routes to the same database: "NeaslatorDb" carries request traffic and is what a connection
+// pooler would sit in front of, and "PostgresDirect" is what session advisory locks are taken on —
+// the startup migration and the quality-upgrade sweep. They hold the same value until a pooler is
+// actually deployed; PostgresDirect proves at startup that whichever it ends up being can hold a
+// session lock, and refuses to start the service if it cannot.
+builder.Services.AddSingleton(PostgresDirect.Create(
+    builder.Configuration.GetConnectionString("NeaslatorDb"),
+    builder.Configuration.GetConnectionString(PostgresDirect.ConnectionStringKey),
+    "ConnectionStrings:NeaslatorDb"));
+
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Garnet") ?? "localhost:6379"));
 
@@ -213,7 +223,8 @@ WebApplication app = builder.Build();
 using (IServiceScope scope = app.Services.CreateScope())
 {
     NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
-    await db.MigrateWithAdvisoryLockAsync("neaslator");
+    await db.MigrateWithAdvisoryLockAsync(
+        scope.ServiceProvider.GetRequiredService<PostgresDirect>(), "neaslator", logger: app.Logger);
 }
 
 
