@@ -108,6 +108,88 @@ public static class MigrationLockExtensions
     }
 
     /// <summary>
+    /// Runs <paramref name="work"/> only if no other process holds <paramref name="lockName"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The non-blocking counterpart of <see cref="MigrateWithAdvisoryLockAsync"/>, and the wait is
+    /// the whole difference. Startup work must BLOCK: a replica that skipped migrating would serve
+    /// traffic against a half-migrated schema. A periodic sweep must SKIP: it runs again on its own
+    /// interval, and queueing every replica behind the winner just means they all fire the moment
+    /// the lock frees.
+    /// </para>
+    /// <para>
+    /// The connection is opened explicitly and held for the duration. A session advisory lock lives
+    /// and dies with its session, and EF hands its connection back to the pool between commands —
+    /// so a lock taken on a pooled connection ends up attached to a session given to whoever asks
+    /// next, while the unlock runs on whatever connection EF supplies then and quietly returns
+    /// false.
+    /// </para>
+    /// <para>
+    /// Read with ExecuteScalar. <c>ExecuteSqlRawAsync</c> would report rows affected — minus one
+    /// for a SELECT — which is never zero, so a guard written that way never fires at all.
+    /// </para>
+    /// </remarks>
+    /// <returns>True when this process ran the work; false when another already holds the lock.</returns>
+    public static async Task<bool> TryRunWithAdvisoryLockAsync(
+        this DbContext context,
+        string lockName,
+        Func<CancellationToken, Task> work,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(work);
+
+        // An advisory lock is a Postgres construct. A non-relational context has no connection to
+        // take one on — and, being an in-memory store private to one process, has nothing to
+        // contend with either. Running the work unguarded there is correct rather than a
+        // concession: the guard exists to coordinate processes that share a database, and such a
+        // context by definition does not.
+        if (!context.Database.IsRelational())
+        {
+            await work(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        long lockKey = DeriveLockKey(lockName);
+
+        await context.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await using NpgsqlCommand acquire =
+                (NpgsqlCommand)context.Database.GetDbConnection().CreateCommand();
+
+            acquire.CommandText = "SELECT pg_try_advisory_lock(@key)";
+            acquire.Parameters.AddWithValue("key", lockKey);
+
+            if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
+            {
+                return false;
+            }
+
+            try
+            {
+                await work(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // Not passing the caller's token: a cancelled sweep is exactly when the lock most
+                // needs releasing, and a cancelled unlock would keep every other replica out until
+                // the connection is recycled.
+                await ExecuteAsync(context, "SELECT pg_advisory_unlock(@key)", lockKey, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            return true;
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Stable 64-bit key from the lock name. Advisory locks are a flat bigint namespace, so
     /// the mapping only has to be deterministic across processes and unlikely to collide —
     /// string.GetHashCode is randomized per process and would not do, and a lock whose key differs

@@ -50,6 +50,34 @@ public sealed class QualityUpgradeJob : BackgroundService
         var router = scope.ServiceProvider.GetRequiredService<ITranslationRouter>();
         var cache = scope.ServiceProvider.GetRequiredService<ITranslationCache>();
 
+        // One replica upgrades. Every replica used to: each selected the same five hundred oldest
+        // degraded entries and re-translated all of them, so the provider bill and the provider
+        // QUOTA both multiplied by the replica count. DeepSeek already exhausts partway through a
+        // large run, which makes spending it several times over on identical work the difference
+        // between a sweep that finishes and one that never does.
+        //
+        // Non-blocking: the sweep runs again on its own interval, so a replica that loses should
+        // do nothing rather than queue up and fire the moment the lock frees.
+        bool ran = await db.TryRunWithAdvisoryLockAsync(
+            "neaslator:quality-upgrade",
+            token => UpgradeDegradedEntriesCoreAsync(db, router, cache, activity, startTicks, token),
+            ct);
+
+        if (!ran)
+        {
+            activity?.SetTag("neaslator.quality.result", "another_replica_running");
+            _logger.LogDebug("Quality upgrade skipped: another replica holds the lock.");
+        }
+    }
+
+    private async Task UpgradeDegradedEntriesCoreAsync(
+        NeaslatorDbContext db,
+        ITranslationRouter router,
+        ITranslationCache cache,
+        Activity? activity,
+        long startTicks,
+        CancellationToken ct)
+    {
         List<TranslationMemoryEntry> degraded = await db.TranslationMemory
             .Where(e => e.ProviderTier > Domain.Enums.TranslationProviderTier.Primary)
             .OrderBy(e => e.UpdatedAt)
