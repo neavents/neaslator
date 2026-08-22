@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Neaslator.Features.TranslateMenu;
@@ -211,6 +212,19 @@ RetryEndpoint.Map(api);
 ProviderHealthEndpoint.Map(api);
 MemoryStatsEndpoint.Map(api);
 app.MapHealthChecks("/health");
+// Split probes, because an orchestrator asks two different questions and one endpoint can only
+// answer one of them.
+//
+//   /health/live  — is this process alive? No dependency checks at all.
+//   /health/ready — can it serve? Postgres, Garnet and RabbitMQ, tagged "ready".
+//
+// Pointing BOTH at the aggregate endpoint is what makes a dependency outage worse than it has
+// to be: liveness failing RESTARTS the pod, so a database blip kills every replica, and they
+// crash-loop for as long as the dependency is down instead of waiting quietly for it to come
+// back. Readiness failing merely takes the pod out of rotation, which is the correct response
+// to a dependency it cannot reach.
+app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = static hc => hc.Tags.Contains("ready") });
 app.MapGet("/", () => Results.Ok(new { service = "neaslator", status = "running" }));
 
 app.Run();
