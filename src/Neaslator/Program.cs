@@ -123,8 +123,38 @@ builder.Services.AddMassTransit(cfg =>
     // identity, subscription and messaging with zero inbox filters on every endpoint for a long time
     // (task #10), which is why this is a separate, explicit call and why the test asserts it against
     // the running bus rather than against this source.
+    bool useQuorumQueues = builder.Configuration.GetValue("Messaging:UseQuorumQueues", true);
+
     cfg.AddConfigureEndpointsCallback((registrationContext, _, endpointConfigurator) =>
-        endpointConfigurator.UseEntityFrameworkOutbox<NeaslatorDbContext>(registrationContext));
+    {
+        endpointConfigurator.UseEntityFrameworkOutbox<NeaslatorDbContext>(registrationContext);
+
+        // QUORUM, NOT CLASSIC.
+        //
+        // A classic queue lives on exactly one node: lose the node and the queue is
+        // unavailable, lose its disk and the messages are gone. Mirrored queues were the old
+        // answer and were removed in RabbitMQ 4.0, so on 4.x a quorum queue is the only
+        // replication available at all. A publish is confirmed once a majority of replicas
+        // have written it to disk, which is slower per message and is the right trade for
+        // menu publishes, billing sagas and email sends every time.
+        //
+        // The broker also defaults to quorum, and both belong. The broker setting covers
+        // anything that forgets to ask; asking here means a queue's durability is visible
+        // where the queue is declared rather than only in infrastructure configuration
+        // sitting in another repository.
+        //
+        // Messaging:UseQuorumQueues exists because queue type is FIXED AT DECLARATION.
+        // Against a broker that already holds a classic queue of the same name, declaring it
+        // quorum fails with PRECONDITION_FAILED and the endpoint does not start. That is the
+        // correct failure — it says the cut-over has not happened — but it would take the
+        // development estate down on the next rebuild, so docker-compose.yml sets it false
+        // until those queues are drained. Kubernetes gets a new broker with no queues on it,
+        // so there the cut-over is free.
+        if (useQuorumQueues && endpointConfigurator is IRabbitMqReceiveEndpointConfigurator rabbitEndpoint)
+        {
+            rabbitEndpoint.SetQuorumQueue();
+        }
+    });
 
     cfg.UsingRabbitMq((context, rabbit) =>
     {
