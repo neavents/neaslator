@@ -139,12 +139,38 @@ spec:
           # an advisory lock, so a replica that loses the race waits for the winner. Without this,
           # liveness begins on its own schedule and can kill a pod mid-migration.
           startupProbe:
-            httpGet: { path: /health/live, port: 5300 }
+            # THE DEPENDENCY GATE, and the only probe that should be one.
+            #
+            # /health/ready checks PostgreSQL, Garnet and RabbitMQ. That belongs here, where it runs
+            # until it passes once and then never again: a pod must not join rotation before it can
+            # reach the things it needs, and a pod that never can stays 0/1 and says "Startup probe
+            # failed" in `kubectl describe` — the most diagnosable failure available.
+            #
+            # Five minutes of grace (30 x 10s), because a cold start includes migrating.
+            httpGet: { path: /health/ready, port: 5300 }
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 30
           readinessProbe:
-            httpGet: { path: /health/ready, port: 5300 }
+            # POINTED AT AN ENDPOINT THAT CHECKS NOTHING EXTERNAL, for the same reason as liveness
+            # below but with a subtler consequence, which is why it took a node failure to find.
+            #
+            # This used to be /health/ready. Stopping the node holding the PostgreSQL primary
+            # produced 91 seconds of TOTAL outage, and only the first 50 of those were the cluster
+            # noticing the node had gone. The other 41 were self-inflicted: every identity pod
+            # checks PostgreSQL in its readiness probe, so when the primary went away they all went
+            # unready together — including the ones on healthy nodes that were perfectly able to
+            # serve. Traefik then had no backend at all and answered 503 for the whole failover.
+            #
+            # A shared dependency going down is precisely the case where removing pods from rotation
+            # makes things worse. Left in rotation, the application answers: cached reads still
+            # work, and anything that truly needs the database returns its own error with a trace id
+            # instead of an anonymous 503 from the proxy. Nothing is gained by hiding a pod whose
+            # only problem is one every other pod also has.
+            #
+            # Readiness therefore reports whether THIS pod can serve, and the dependency check has
+            # moved to startupProbe, where it gates the first request rather than every request.
+            httpGet: { path: /health/live, port: 5300 }
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
