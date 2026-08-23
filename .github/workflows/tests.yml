@@ -30,12 +30,37 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props') }}
           restore-keys: nuget-${{ runner.os }}-
 
+      # THE RESTORE CANNOT WORK WITHOUT THIS, AND FAILS AS A 401 THAT NAMES NOTHING.
+      #
+      # Neavents.Messaging.Contracts comes from https://nuget.pkg.github.com/polatefekaya, which is
+      # a PERSONAL account's package feed. secrets.GITHUB_TOKEN is scoped to this repository and can
+      # only read packages that this repository owns, so it cannot read that feed at all — no
+      # permission setting on the workflow changes that. It needs a personal access token belonging
+      # to the account that owns the feed, with read:packages.
+      #
+      # Checked here rather than discovered at restore, because a missing secret expands to an empty
+      # string and NuGet reports "response status code does not indicate success: 401", which reads
+      # like an outage rather than a configuration gap.
+      - name: Check the package feed credential is present
+        run: |
+          if [ -z "${{ secrets.NUGET_GITHUB_TOKEN }}" ]; then
+            echo "::error::NUGET_GITHUB_TOKEN is not set for this repository."
+            echo "The Neavents.* packages live on a personal GitHub Packages feed"
+            echo "(nuget.pkg.github.com/polatefekaya) which secrets.GITHUB_TOKEN cannot read."
+            echo "Add a repository or organisation secret named NUGET_GITHUB_TOKEN holding a"
+            echo "personal access token with read:packages, owned by the account that owns the feed."
+            exit 1
+          fi
+
       - name: Restore
         run: dotnet restore Neaslator.slnx
         env:
-          # nuget.config reads the GitHub Packages credential from the environment, so no token is
-          # committed to the repository.
-          NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NuGet reads this variable natively; the suffix is the source key from nuget.config.
+          # The workflow used to set NUGET_GITHUB_TOKEN instead, which NOTHING reads — no
+          # nuget.config in the estate refers to it — so the restore ran unauthenticated.
+          NUGET_PACKAGE_SOURCE_CREDENTIALS_GitHub: >-
+            {"Username":"${{ secrets.NUGET_GITHUB_USER || 'polatefekaya' }}",
+             "ClearTextPassword":"${{ secrets.NUGET_GITHUB_TOKEN }}"}
 
       # Debug, not Release. Directory.Build.props turns warnings into errors in Release and the NuGet
       # audit currently fails on pre-existing transitive advisories — a supply-chain issue rather than
