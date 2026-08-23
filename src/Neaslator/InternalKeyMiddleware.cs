@@ -24,6 +24,18 @@ public sealed class InternalKeyMiddleware
     private static readonly string[] AnonymousPaths =
     [
         "/health",
+        // /metrics, for the same reason as /health and with the same limits.
+        //
+        // A Prometheus scraper carries no shared secret and cannot be given one through the header
+        // above without putting the estate's internal key in a scrape config. With this endpoint
+        // behind the key check every scrape returned 401, so the service exported nothing — and
+        // nothing reported it: the exporter was configured, the endpoint existed, and the only
+        // symptom was a dashboard with no data, which reads as a dashboard nobody built yet.
+        //
+        // Not a hole. This is the container's own port on a ClusterIP Service with no Ingress rule
+        // pointing at it, so /metrics is reachable only from inside the cluster — the same boundary
+        // that already protects every service-to-service call.
+        "/metrics",
         "/hubs",
     ];
 
