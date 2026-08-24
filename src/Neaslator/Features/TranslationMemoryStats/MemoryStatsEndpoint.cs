@@ -7,7 +7,17 @@ public static class MemoryStatsEndpoint
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapGet("/translate/v1/memory/stats", (NeaslatorDbContext db, CancellationToken ct) => HandleAsync(db, ct));
+        // Read from a standby. These are aggregate counts over the whole translation memory —
+        // four grouped scans, the most expensive read this service serves, and nobody is waiting
+        // to watch a number move. Exactly the shape a replica exists for.
+        group.MapGet(
+            "/translate/v1/memory/stats",
+            async (ReadReplica replica, CancellationToken ct) =>
+            {
+                await using var db = replica.Open();
+
+                return await HandleAsync(db, ct);
+            });
     }
 
     internal static async Task<IResult> HandleAsync(NeaslatorDbContext db, CancellationToken ct)

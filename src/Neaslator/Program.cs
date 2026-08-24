@@ -39,6 +39,13 @@ builder.Services.AddSingleton(PostgresDirect.Create(
     builder.Configuration.GetConnectionString(PostgresDirect.ConnectionStringKey),
     "ConnectionStrings:NeaslatorDb"));
 
+// The read seam. Singleton because it owns the built options and a lag sample and has no
+// per-request state; see ReadReplica for which reads may use it and, more importantly, which may
+// not. Unset means "the same server as writes", which is correct where there are no replicas.
+builder.Services.AddSingleton(ReadReplica.Create(
+    builder.Configuration.GetConnectionString("NeaslatorDb"),
+    builder.Configuration.GetConnectionString("PostgresRead")));
+
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(builder.Configuration.GetConnectionString("Garnet") ?? "localhost:6379"));
 
