@@ -173,6 +173,17 @@ builder.Services.AddMassTransit(cfg =>
         {
             h.Username(username);
             h.Password(password);
+            // Stated, not inherited. MassTransit enables publisher confirmations for
+            // RabbitMQ by default, and every service in this estate was relying on that
+            // default without a line of code saying so — two of them called a
+            // ConfigurePublisherConfirmations helper that took a timeout and returned the
+            // configurator UNTOUCHED, which read as configuration and configured nothing.
+            //
+            // It matters for the outbox. An unconfirmed publish is one the broker may
+            // never have accepted, and for an outboxed message that means the row
+            // committed and the event did not — the exact failure the outbox exists to
+            // rule out. A library default is not somewhere to keep that guarantee.
+            h.PublisherConfirmation = true;
         });
 
         rabbit.UseDelayedMessageScheduler();
