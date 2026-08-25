@@ -1,0 +1,132 @@
+# Build the image and push it. Nothing here deploys anything.
+#
+# ── HOW A COMMIT BECOMES A RUNNING POD ───────────────────────────────────────────────────────────
+#
+#   1. this workflow builds the image and pushes ghcr.io/neavents/neaslator:main
+#   2. Argo CD Image Updater notices the new digest behind that tag and writes it into git
+#   3. Argo CD sees the commit and syncs the cluster
+#
+# Each step does one thing, and the only thing that ever touches the cluster is Argo CD. This
+# workflow holds no kubeconfig and no cluster credential — it cannot deploy even by accident, which
+# is most of the point of arranging it this way.
+#
+# Before this existed the middle step was a person: build-images.sh on a laptop, then
+# pin-image-digests.sh, then a commit. Skip it and Argo keeps the cluster faithfully matching a
+# manifest that names last week's image — reporting Synced and Healthy the whole time, because it
+# IS synced, to the wrong thing. That is exactly what had happened: the pinned digests were three
+# days behind the code and everything looked green.
+name: Publish image
+
+on:
+  # ── WHY NOT `branches: [main]` ────────────────────────────────────────────────────────────────
+  #
+  # It was, and the result was that this workflow had NEVER RUN. Argo CD deploys this repository
+  # from a long-lived branch -- eight of the nine services are between 12 and 109 commits ahead of
+  # main -- so a trigger scoped to main fires on a branch nobody deploys. Every image running in
+  # the cluster had been built by hand on a laptop and pushed, and nothing said so: the workflow
+  # file existed, was valid, and was green by never having been asked to do anything.
+  #
+  # Building every branch is deliberate and is not as loose as it looks. The tag carries the branch
+  # name, and Argo CD Image Updater watches exactly ONE tag per service -- whichever branch that
+  # service's Application tracks. So other branches build, and are pushed, and deploy nothing.
+  # The branch that is deployed is the branch that is built, which is the property that was missing.
+  push:
+  # Manual runs exist for the case where the branch is fine and the registry is not -- a deleted
+  # package, a failed push, a retag. Rebuilding from an unchanged commit must be possible without an
+  # empty commit to trigger it.
+  workflow_dispatch:
+
+concurrency:
+  # One build per branch. Two pushes in quick succession would otherwise race to publish :main, and
+  # whichever finished last would win regardless of which commit was newer.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Writing to ghcr.io/neavents/* under the same owner as this repository. Nothing else — this
+      # token cannot push code, open a PR, or read another repository.
+      packages: write
+
+    steps:
+      # Checked out into a SUBDIRECTORY on purpose. neaslator's Dockerfile copies
+      # `neaslator/src/Neaslator/...`, so its build context is the estate ROOT — the directory that
+      # contains the repository, not the repository. k8s/build-images.sh records the same thing and
+      # is the authority: it is the one service whose context is "." rather than its own repo.
+      #
+      # Building it from the repository root fails on a path that does not exist there, and it fails
+      # late, after the SDK image has been pulled.
+      - uses: actions/checkout@v4
+        with:
+          path: neaslator
+
+      # The Dockerfile restores Neavents.Messaging.Contracts from a package feed on a PERSONAL
+      # account (nuget.pkg.github.com/polatefekaya), and secrets.GITHUB_TOKEN is scoped to this
+      # repository's owner — it cannot read that feed and the restore 401s inside the build, where
+      # the error is buried in layer output.
+      #
+      # Checked before the build rather than after, so a missing secret is one clear line instead of
+      # a failed restore ten minutes in.
+      - name: Check the package feed credential
+        run: |
+          if [ -z "${{ secrets.NUGET_GITHUB_TOKEN }}" ]; then
+            echo "::error::NUGET_GITHUB_TOKEN is not set for this repository."
+            echo "The image build restores a private package from nuget.pkg.github.com/polatefekaya,"
+            echo "which secrets.GITHUB_TOKEN cannot read. Add an organisation secret named"
+            echo "NUGET_GITHUB_TOKEN holding a PAT with read:packages."
+            exit 1
+          fi
+
+      # A Docker tag cannot contain '/', and every branch here has one: harden/outbox-observability,
+      # feature/authorization-rbac-pdp. Left unsanitised the push is rejected by the registry at the
+      # very end of the build, after the slow part has already been paid for.
+      - name: Work out the tag for this branch
+        run: |
+          branch="${GITHUB_REF_NAME}"
+          echo "BRANCH_TAG=${branch//\//-}" >> "$GITHUB_ENV"
+          echo "  ${branch} -> ${branch//\//-}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: neaslator/Dockerfile
+          push: true
+          # TWO tags, doing different jobs.
+          #
+          # The branch tag is a moving pointer and is ONLY an input to Image Updater — it is never what a
+          # manifest names. Image Updater resolves it to a digest and commits that digest, so what
+          # git holds, and therefore what the cluster runs, is always immutable. Rollback stays a
+          # git revert.
+          #
+          # :sha is the permanent record. A moving tag alone would make "which build is this pod
+          # running" unanswerable after the next push.
+          tags: |
+            ghcr.io/neavents/neaslator:${{ env.BRANCH_TAG }}
+            ghcr.io/neavents/neaslator:${{ github.sha }}
+          build-args: |
+            GITHUB_USER=${{ github.actor }}
+            GITHUB_TOKEN=${{ secrets.NUGET_GITHUB_TOKEN }}
+          # Layer cache in the registry. A .NET restore and publish is the slow part of every one of
+          # these builds, and it is identical between commits that did not touch the project files.
+          cache-from: type=registry,ref=ghcr.io/neavents/neaslator:buildcache
+          cache-to: type=registry,ref=ghcr.io/neavents/neaslator:buildcache,mode=max
+
+      - name: Report what was published
+        run: |
+          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '- `ghcr.io/neavents/neaslator:${{ env.BRANCH_TAG }}` -> `${{ github.sha }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Argo CD Image Updater picks this up within its poll interval and commits the digest." >> "$GITHUB_STEP_SUMMARY"
