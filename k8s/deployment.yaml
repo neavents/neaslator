@@ -32,8 +32,23 @@ spec:
         app.kubernetes.io/part-of: neavents
         app.kubernetes.io/component: api
     spec:
-      # Spread replicas across nodes where possible. Preferred, not required: on a single-node
-      # cluster a hard constraint leaves the second replica permanently Pending.
+      # ── SPREADING ACROSS NODES ───────────────────────────────────────────────────────────────
+      #
+      # Both mechanisms, doing different jobs. podAntiAffinity below expresses "not on a node that
+      # already has one of me"; topologySpreadConstraints expresses "keep the counts within one of
+      # each other", which is the stronger statement and the one that survives a replica count
+      # changing.
+      #
+      # ScheduleAnyway in the base, DoNotSchedule in prod. A hard constraint here would leave the
+      # second replica permanently Pending on a single-node cluster, and prod flips it together
+      # with the rollout strategy — see the note there, because the two are one decision.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: neaslator
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
