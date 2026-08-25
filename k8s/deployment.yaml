@@ -43,6 +43,21 @@ spec:
                 labelSelector:
                   matchLabels:
                     app.kubernetes.io/name: neaslator
+      # ── PULLING THE IMAGE ────────────────────────────────────────────────────────────────────
+      #
+      # In the BASE, not only in the prod overlay, because every environment now pulls the same
+      # images from ghcr.io/neavents/* and those packages are private.
+      #
+      # It used to be prod-only, and that arrangement hid a deployment-stopping bug for as long as
+      # it existed: the local cluster never pulls at all — build-images.sh imports straight into
+      # k3d's containerd — so the registry path was exercised by exactly one environment, and that
+      # environment had never been deployed. A fresh production cluster would have scheduled all ten
+      # services and sat in ImagePullBackOff on every one, with correct-looking manifests.
+      #
+      # Making local pull the same way removes the blind spot rather than documenting it.
+      # optional: the Secret is created by scripts/create-ghcr-pull-secret.sh at apply time.
+      imagePullSecrets:
+        - name: ghcr-pull
       securityContext:
         # 1654 is APP_UID in the official .NET base images — the `app` user they already create.
         runAsNonRoot: true
