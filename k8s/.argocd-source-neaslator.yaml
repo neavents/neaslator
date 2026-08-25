@@ -1,3 +1,4 @@
 kustomize:
   images:
   - ghcr.io/neavents/neaslator:main@sha256:e1a360f853f5cc83fd8b63918a7a86ba09b72585738657b12e8250345fe4282d
+  - neavents/neaslator=ghcr.io/neavents/neaslator:main@sha256:e1a360f853f5cc83fd8b63918a7a86ba09b72585738657b12e8250345fe4282d
