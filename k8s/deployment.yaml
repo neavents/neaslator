@@ -75,6 +75,9 @@ spec:
         - name: ghcr-pull
       securityContext:
         # 1654 is APP_UID in the official .NET base images — the `app` user they already create.
+        # Not every service is .NET: a Node image builds its own user, and nginx-unprivileged runs
+        # as 101. Forcing 1654 on those produces a container that cannot read its own files, which
+        # surfaces as a crash loop with a permission error nobody expects from a manifest.
         runAsNonRoot: true
         runAsUser: 1654
         fsGroup: 1654
@@ -157,6 +160,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+
           lifecycle:
             preStop:
               exec:
@@ -216,6 +220,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+
       # preStop (8s) plus the host's own shutdown drain must both fit inside this, or the kubelet
       # sends SIGKILL mid-drain and undoes both.
       terminationGracePeriodSeconds: 45
