@@ -31,6 +31,22 @@ on:
   # service's Application tracks. So other branches build, and are pushed, and deploy nothing.
   # The branch that is deployed is the branch that is built, which is the property that was missing.
   push:
+    # ── DO NOT REBUILD ON A MANIFEST-ONLY COMMIT ─────────────────────────────────────────────────
+    #
+    # Without this, the pipeline eats itself. Argo CD Image Updater commits the resolved digest into
+    # k8s/.argocd-source-<app>.yaml; that push triggers this workflow; the build produces an image
+    # with a NEW digest, because a Docker build is not reproducible; Image Updater sees the new
+    # digest and commits again. neaslator ran five times in thirty-five minutes, every run authored
+    # by argocd-image-updater, each one succeeding and each one causing the next.
+    #
+    # It also rolled the pods every time, so a loop that costs Actions minutes was also churning
+    # production for no reason.
+    #
+    # Nothing under k8s/ can change the image: no Dockerfile lives there, in any repository -- and
+    # that was checked rather than assumed before this was added.
+    paths-ignore:
+      - 'k8s/**'
+      - '**.md'
   # Manual runs exist for the case where the branch is fine and the registry is not -- a deleted
   # package, a failed push, a retag. Rebuilding from an unchanged commit must be possible without an
   # empty commit to trigger it.
