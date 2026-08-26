@@ -1,3 +1,3 @@
 kustomize:
   images:
-  - neavents/neaslator=ghcr.io/neavents/neaslator:harden-cross-instance-lock-and-provider-health@sha256:b26bacc4eea9225bf0a2685e33b2357c3e41c7a52a2753ff8a7e066d8827748c
+  - neavents/neaslator=ghcr.io/neavents/neaslator:harden-cross-instance-lock-and-provider-health@sha256:5e3cca85158762b85b858d443b7391835fda156b99b1748750458044df57efe8
