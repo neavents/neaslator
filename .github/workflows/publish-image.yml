@@ -103,6 +103,18 @@ jobs:
           context: .
           file: neaslator/Dockerfile
           push: true
+          # WHAT LINKS THE PACKAGE TO THIS REPOSITORY, and without it Actions cannot push.
+          #
+          # neavents is an ORGANISATION, and an org-level container package with no repository
+          # link grants no repository any write access. The automatic GITHUB_TOKEN then fails
+          # with `denied: permission_denied` on push, no matter what permissions the workflow
+          # declares -- which reads like a token problem and is an ownership one.
+          #
+          # GHCR reads this label and links the package to the repository. It only does so when
+          # the package is CREATED: adding the label to an existing unlinked package changes
+          # nothing, which is why the existing ones had to be deleted once.
+          labels: |
+            org.opencontainers.image.source=https://github.com/neavents/neaslator
           # TWO tags, doing different jobs.
           #
           # The branch tag is a moving pointer and is ONLY an input to Image Updater — it is never what a
