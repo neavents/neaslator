@@ -5,6 +5,18 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: neaslator
+  # Pinned so a bare `kubectl apply -f` cannot land this somewhere else. The overlays all set
+  # `namespace: neavents` and Argo's destination is the same, so kustomize's namespace transformer
+  # simply reasserts what is already here -- this changes nothing about the supported path and only
+  # closes the unsupported one.
+  #
+  # It was open, and something walked through it: on 2026-08-26 a `kubectl apply` without a namespace
+  # created media and media-worker in `default`. They sat there for five days in ImagePullBackOff --
+  # no ghcr-pull secret exists in that namespace -- emitting 27,000 FailedToRetrieveImagePullSecret
+  # warnings. Nothing owned them, so nothing pruned them: Argo only reconciles what it deployed, and
+  # these carried a kubectl last-applied-configuration instead. The estate looked healthy because it
+  # WAS healthy; the wreckage was in a namespace nobody reads.
+  namespace: neavents
   labels:
     app.kubernetes.io/name: neaslator
     app.kubernetes.io/part-of: neavents

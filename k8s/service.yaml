@@ -3,6 +3,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: neaslator
+  # See the namespace note on the Deployment: pinned so a stray apply cannot create a second,
+  # broken copy of this estate in another namespace.
+  namespace: neavents
   labels:
     app.kubernetes.io/name: neaslator
     app.kubernetes.io/part-of: neavents

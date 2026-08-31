@@ -5,6 +5,8 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: neaslator
+  # See the namespace note on the Deployment.
+  namespace: neavents
 spec:
   minAvailable: 1
   selector:
