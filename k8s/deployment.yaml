@@ -179,6 +179,8 @@ spec:
                   name: neavents-rabbit-default-user
                   key: password
                   optional: true
+            - name: OpenTelemetry__OtlpEndpoint
+              value: "http://otel-collector.observability.svc.cluster.local:4318"
           envFrom:
             - secretRef:
                 name: neaslator-secrets
