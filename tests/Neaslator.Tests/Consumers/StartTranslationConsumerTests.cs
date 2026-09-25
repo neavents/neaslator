@@ -542,4 +542,80 @@ public sealed class StartTranslationConsumerTests
             await harness.Stop();
         }
     }
+
+    [Fact]
+    public async Task The_snapshot_records_the_menus_tenant()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid tenantId = Ulid.NewUlid();
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
+            .Returns(SingleItemSnapshot(Ulid.NewUlid(), Ulid.NewUlid()));
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-tenant-{menuId}");
+        await SeedLanguages(provider, "fr");
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, Ulid.NewUlid()) with { TenantId = tenantId });
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            using IServiceScope scope = provider.CreateScope();
+            NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            (await db.MenuPublishSnapshots.SingleAsync(s => s.MenuId == menuId)).TenantId.Should().Be(tenantId);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task A_row_written_before_tenants_were_recorded_is_stamped_even_when_nothing_changed()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid tenantId = Ulid.NewUlid();
+        MenuSnapshot snapshot = SingleItemSnapshot(Ulid.NewUlid(), Ulid.NewUlid());
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>()).Returns(snapshot);
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-legacy-tenant-{menuId}");
+        await SeedLanguages(provider, "fr");
+
+        DateTimeOffset seededAt = DateTimeOffset.UtcNow.AddDays(-1);
+        using (IServiceScope seed = provider.CreateScope())
+        {
+            NeaslatorDbContext seedDb = seed.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            seedDb.MenuPublishSnapshots.Add(new MenuPublishSnapshot
+            {
+                MenuId = menuId,
+                OwnerId = ownerId,
+                SnapshotJson = JsonSerializer.Serialize(snapshot),
+                PublishedAt = seededAt
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId) with { TenantId = tenantId });
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            using IServiceScope scope = provider.CreateScope();
+            NeaslatorDbContext db = scope.ServiceProvider.GetRequiredService<NeaslatorDbContext>();
+            MenuPublishSnapshot row = await db.MenuPublishSnapshots.SingleAsync(s => s.MenuId == menuId);
+            row.TenantId.Should().Be(tenantId);
+            row.PublishedAt.Should().Be(seededAt, "stamping the tenant is not a translation");
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
 }

@@ -12,14 +12,16 @@ public static class RetryEndpoint
         group.MapPost("/translate/v1/menu/{menuId}/retry", (
             string menuId,
             RetryTranslationRequest request,
+            HttpRequest httpRequest,
             NeaslatorDbContext db,
             IPublishEndpoint publisher,
-            CancellationToken ct) => HandleAsync(menuId, request, db, publisher, ct));
+            CancellationToken ct) => HandleAsync(menuId, request, GatewayCaller.From(httpRequest), db, publisher, ct));
     }
 
     internal static async Task<IResult> HandleAsync(
         string menuId,
         RetryTranslationRequest request,
+        GatewayCaller caller,
         NeaslatorDbContext db,
         IPublishEndpoint publisher,
         CancellationToken ct)
@@ -41,13 +43,14 @@ public static class RetryEndpoint
             .AsNoTracking()
             .FirstOrDefaultAsync(ct);
 
-        if (snapshot is null)
+        if (snapshot is null || !caller.MaySee(snapshot.TenantId))
             return Results.NotFound(new { error = "No translation history for this menu" });
 
         await publisher.Publish(new StartTranslationCommand
         {
             MenuId = parsedMenuId,
             OwnerId = snapshot.OwnerId,
+            TenantId = snapshot.TenantId,
             SourceLanguageCode = request.SourceLanguageCode,
             VenueType = request.VenueType,
             CuisineType = request.CuisineType,

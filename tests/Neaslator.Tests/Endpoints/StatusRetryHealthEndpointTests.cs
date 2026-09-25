@@ -3,6 +3,7 @@ using MassTransit;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Neaslator;
 using Neaslator.Domain.Entities;
 using Neaslator.Domain.Enums;
 using Neaslator.Features.ProviderHealth;
@@ -44,12 +45,21 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
         return ctx.Response.StatusCode;
     }
 
-    private async Task SeedSnapshot(Ulid menuId, Ulid ownerId)
+    private static readonly Ulid Tenant = Ulid.NewUlid();
+
+    private static GatewayCaller Member(Ulid? tenantId = null) => new(tenantId ?? Tenant, IsPlatformAdmin: false, IsServiceCall: false);
+
+    private static readonly GatewayCaller Service = new(null, IsPlatformAdmin: false, IsServiceCall: true);
+
+    private static readonly GatewayCaller PlatformAdmin = new(null, IsPlatformAdmin: true, IsServiceCall: false);
+
+    private async Task SeedSnapshot(Ulid menuId, Ulid ownerId, Ulid? tenantId = null, bool legacy = false)
     {
         _db.MenuPublishSnapshots.Add(new MenuPublishSnapshot
         {
             MenuId = menuId,
             OwnerId = ownerId,
+            TenantId = legacy ? null : tenantId ?? Tenant,
             SnapshotJson = "{}",
             PublishedAt = DateTimeOffset.UtcNow
         });
@@ -61,14 +71,14 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
     [Fact]
     public async Task Status_InvalidUlid_Returns400()
     {
-        IResult r = await TranslationStatusEndpoint.HandleAsync("not-a-ulid", _db, CancellationToken.None);
+        IResult r = await TranslationStatusEndpoint.HandleAsync("not-a-ulid", Member(), _db, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status400BadRequest);
     }
 
     [Fact]
     public async Task Status_UnknownMenu_Returns404()
     {
-        IResult r = await TranslationStatusEndpoint.HandleAsync(Ulid.NewUlid().ToString(), _db, CancellationToken.None);
+        IResult r = await TranslationStatusEndpoint.HandleAsync(Ulid.NewUlid().ToString(), Member(), _db, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status404NotFound);
     }
 
@@ -78,7 +88,7 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
         Ulid menuId = Ulid.NewUlid();
         await SeedSnapshot(menuId, Ulid.NewUlid());
 
-        IResult r = await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), _db, CancellationToken.None);
+        IResult r = await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), Member(), _db, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status200OK);
     }
 
@@ -90,7 +100,7 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
     public async Task Retry_InvalidUlid_Returns400()
     {
         IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
-        IResult r = await RetryEndpoint.HandleAsync("bad", ValidRetry(), _db, pub, CancellationToken.None);
+        IResult r = await RetryEndpoint.HandleAsync("bad", ValidRetry(), Member(), _db, pub, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status400BadRequest);
         await pub.DidNotReceive().Publish(Arg.Any<StartTranslationCommand>(), Arg.Any<CancellationToken>());
     }
@@ -102,7 +112,7 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
     public async Task Retry_MissingRequiredField_Returns400(string src, string venue, string cuisine)
     {
         IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
-        IResult r = await RetryEndpoint.HandleAsync(Ulid.NewUlid().ToString(), new RetryTranslationRequest(src, venue, cuisine), _db, pub, CancellationToken.None);
+        IResult r = await RetryEndpoint.HandleAsync(Ulid.NewUlid().ToString(), new RetryTranslationRequest(src, venue, cuisine), Member(), _db, pub, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status400BadRequest);
         await pub.DidNotReceive().Publish(Arg.Any<StartTranslationCommand>(), Arg.Any<CancellationToken>());
     }
@@ -111,7 +121,7 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
     public async Task Retry_UnknownMenu_Returns404_NoPublish()
     {
         IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
-        IResult r = await RetryEndpoint.HandleAsync(Ulid.NewUlid().ToString(), ValidRetry(), _db, pub, CancellationToken.None);
+        IResult r = await RetryEndpoint.HandleAsync(Ulid.NewUlid().ToString(), ValidRetry(), Member(), _db, pub, CancellationToken.None);
         (await StatusOf(r)).Should().Be(StatusCodes.Status404NotFound);
         await pub.DidNotReceive().Publish(Arg.Any<StartTranslationCommand>(), Arg.Any<CancellationToken>());
     }
@@ -124,17 +134,85 @@ public sealed class StatusRetryHealthEndpointTests : IDisposable
         await SeedSnapshot(menuId, ownerId);
         IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
 
-        IResult r = await RetryEndpoint.HandleAsync(menuId.ToString(), ValidRetry(), _db, pub, CancellationToken.None);
+        IResult r = await RetryEndpoint.HandleAsync(menuId.ToString(), ValidRetry(), Member(), _db, pub, CancellationToken.None);
 
         (await StatusOf(r)).Should().Be(StatusCodes.Status202Accepted);
         await pub.Received(1).Publish(
             Arg.Is<StartTranslationCommand>(c =>
                 c.MenuId == menuId &&
                 c.OwnerId == ownerId &&
+                c.TenantId == Tenant &&
                 c.SourceLanguageCode == "en" &&
                 c.VenueType == "Restaurant" &&
                 c.CuisineType == "Italian"),
             Arg.Any<CancellationToken>());
+    }
+
+    // ───── Tenant boundary ─────
+
+    [Fact]
+    public async Task Status_AnotherTenantsMenu_AnswersLikeAnUnknownMenu()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        await SeedSnapshot(menuId, Ulid.NewUlid());
+
+        IResult r = await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), Member(Ulid.NewUlid()), _db, CancellationToken.None);
+
+        (await StatusOf(r)).Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [Fact]
+    public async Task Status_CallerWithNoTenant_SeesNothing()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        await SeedSnapshot(menuId, Ulid.NewUlid());
+        var noOrg = new GatewayCaller(null, IsPlatformAdmin: false, IsServiceCall: false);
+
+        IResult r = await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), noOrg, _db, CancellationToken.None);
+
+        (await StatusOf(r)).Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [Fact]
+    public async Task Status_RowWrittenBeforeTenantsWereRecorded_IsVisibleOnlyToServicesAndPlatformAdmins()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        await SeedSnapshot(menuId, Ulid.NewUlid(), legacy: true);
+
+        (await StatusOf(await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), Member(), _db, CancellationToken.None)))
+            .Should().Be(StatusCodes.Status404NotFound);
+        (await StatusOf(await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), Service, _db, CancellationToken.None)))
+            .Should().Be(StatusCodes.Status200OK);
+        (await StatusOf(await TranslationStatusEndpoint.HandleAsync(menuId.ToString(), PlatformAdmin, _db, CancellationToken.None)))
+            .Should().Be(StatusCodes.Status200OK);
+    }
+
+    [Fact]
+    public async Task Retry_AnotherTenantsMenu_Returns404_AndSpendsNothing()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        await SeedSnapshot(menuId, Ulid.NewUlid());
+        IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
+
+        IResult r = await RetryEndpoint.HandleAsync(menuId.ToString(), ValidRetry(), Member(Ulid.NewUlid()), _db, pub, CancellationToken.None);
+
+        (await StatusOf(r)).Should().Be(StatusCodes.Status404NotFound);
+        await pub.DidNotReceive().Publish(Arg.Any<StartTranslationCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Retry_LegacyRow_IsRefusedToAMember_AndAllowedToAService()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        await SeedSnapshot(menuId, Ulid.NewUlid(), legacy: true);
+        IPublishEndpoint pub = Substitute.For<IPublishEndpoint>();
+
+        (await StatusOf(await RetryEndpoint.HandleAsync(menuId.ToString(), ValidRetry(), Member(), _db, pub, CancellationToken.None)))
+            .Should().Be(StatusCodes.Status404NotFound);
+        await pub.DidNotReceive().Publish(Arg.Any<StartTranslationCommand>(), Arg.Any<CancellationToken>());
+
+        (await StatusOf(await RetryEndpoint.HandleAsync(menuId.ToString(), ValidRetry(), Service, _db, pub, CancellationToken.None)))
+            .Should().Be(StatusCodes.Status202Accepted);
     }
 
     // ───── Provider health ─────

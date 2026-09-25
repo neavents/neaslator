@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Neaslator;
 using Neaslator.Domain.Entities;
 using Neaslator.Domain.Enums;
 using Neaslator.Features.TranslationMemoryStats;
@@ -111,7 +112,7 @@ public sealed class ProjectionEndpointTests : IDisposable
         await SeedEntry(2, "en", TranslationProviderTier.Primary, 2);
         await SeedEntry(3, "es", TranslationProviderTier.Secondary, 3);
 
-        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(_db, CancellationToken.None));
+        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(Service, _db, CancellationToken.None));
         using JsonDocument _ = body;
 
         status.Should().Be(StatusCodes.Status200OK);
@@ -135,11 +136,36 @@ public sealed class ProjectionEndpointTests : IDisposable
     [Fact]
     public async Task MemoryStats_Empty_ReturnsZeroTotals()
     {
-        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(_db, CancellationToken.None));
+        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(Service, _db, CancellationToken.None));
         using JsonDocument _ = body;
 
         status.Should().Be(StatusCodes.Status200OK);
         Prop(body.RootElement, "totalEntries").GetInt64().Should().Be(0);
         Prop(body.RootElement, "totalHits").GetInt64().Should().Be(0);
+    }
+
+    private static readonly GatewayCaller Service = new(null, IsPlatformAdmin: false, IsServiceCall: true);
+
+    [Fact]
+    public async Task MemoryStats_SpanEveryTenant_SoASignedInMemberIsRefused()
+    {
+        await SeedEntry(1, "en", TranslationProviderTier.Primary, 1);
+        var member = new GatewayCaller(Ulid.NewUlid(), IsPlatformAdmin: false, IsServiceCall: false);
+
+        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(member, _db, CancellationToken.None));
+        using JsonDocument _ = body;
+
+        status.Should().Be(StatusCodes.Status403Forbidden);
+    }
+
+    [Fact]
+    public async Task MemoryStats_AreServedToAPlatformAdmin()
+    {
+        var admin = new GatewayCaller(null, IsPlatformAdmin: true, IsServiceCall: false);
+
+        (int status, JsonDocument body) = await Execute(await MemoryStatsEndpoint.HandleAsync(admin, _db, CancellationToken.None));
+        using JsonDocument _ = body;
+
+        status.Should().Be(StatusCodes.Status200OK);
     }
 }
