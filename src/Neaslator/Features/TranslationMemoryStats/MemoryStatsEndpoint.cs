@@ -12,16 +12,22 @@ public static class MemoryStatsEndpoint
         // to watch a number move. Exactly the shape a replica exists for.
         group.MapGet(
             "/translate/v1/memory/stats",
-            async (ReadReplica replica, CancellationToken ct) =>
+            async (HttpRequest request, ReadReplica replica, CancellationToken ct) =>
             {
                 await using var db = replica.Open();
 
-                return await HandleAsync(db, ct);
+                return await HandleAsync(GatewayCaller.From(request), db, ct);
             });
     }
 
-    internal static async Task<IResult> HandleAsync(NeaslatorDbContext db, CancellationToken ct)
+    /// <summary>
+    /// Every tenant's translation memory in one aggregate, so it is for operators and services only.
+    /// </summary>
+    internal static async Task<IResult> HandleAsync(GatewayCaller caller, NeaslatorDbContext db, CancellationToken ct)
     {
+        if (!caller.SeesEveryTenant)
+            return Forbidden();
+
         long totalEntries = await db.TranslationMemory.LongCountAsync(ct);
         long totalHits = await db.TranslationMemory.SumAsync(e => e.HitCount, ct);
 
@@ -45,4 +51,9 @@ public static class MemoryStatsEndpoint
             entriesBySourceLanguage
         });
     }
+
+    private static IResult Forbidden() => Results.Problem(
+        statusCode: StatusCodes.Status403Forbidden,
+        title: "FORBIDDEN",
+        detail: "Translation memory statistics span every tenant and are for platform administrators.");
 }

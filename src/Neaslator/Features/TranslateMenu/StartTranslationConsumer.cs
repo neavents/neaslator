@@ -149,6 +149,11 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
             using (Activity? snapshotActivity = NeaslatorActivitySources.Saga.StartActivity("save_snapshot"))
             {
                 string snapshotJson = JsonSerializer.Serialize(currentSnapshot);
+
+                // Stamped even when nothing landed: the tenant is who may see this row, not translation progress.
+                if (previousSnapshotEntity is not null && command.TenantId is { } tenantId)
+                    previousSnapshotEntity.TenantId = tenantId;
+
                 if (!anythingLanded)
                 {
                     snapshotActivity?.SetTag("neaslator.snapshot_action", "skipped");
@@ -169,6 +174,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                     {
                         MenuId = command.MenuId,
                         OwnerId = command.OwnerId,
+                        TenantId = command.TenantId,
                         SnapshotJson = snapshotJson,
                         PublishedAt = DateTimeOffset.UtcNow
                     });
