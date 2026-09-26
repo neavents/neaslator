@@ -248,6 +248,39 @@ public sealed class StartTranslationConsumerTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CompletedEventCarriesTheCommandTenant(bool hasTenant)
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid? tenantId = hasTenant ? Ulid.NewUlid() : null;
+
+        _menuData.GetMenuSnapshotAsync(menuId, Arg.Any<Ulid>(), Arg.Any<Ulid?>(), Arg.Any<CancellationToken>())
+            .Returns(SingleItemSnapshot(Ulid.NewUlid(), Ulid.NewUlid()));
+        CacheReturnsHitsForEverything();
+
+        await using ServiceProvider provider = BuildHarness($"saga-tenant-{menuId}");
+        await SeedLanguages(provider, "fr");
+        ITestHarness harness = provider.GetRequiredService<ITestHarness>();
+        await harness.Start();
+        try
+        {
+            await harness.Bus.Publish(Command(menuId, ownerId) with { TenantId = tenantId });
+
+            (await harness.Published.Any<MenuTranslationCompletedEvent>()).Should().BeTrue();
+
+            MenuTranslationCompletedEvent evt = harness.Published.Select<MenuTranslationCompletedEvent>().First().Context.Message;
+            evt.TenantId.Should().Be(tenantId);
+            evt.OwnerId.Should().Be(ownerId);
+        }
+        finally
+        {
+            await harness.Stop();
+        }
+    }
+
     [Fact]
     public async Task PartialFailure_ReportsCompletedAndFailedLanguages()
     {

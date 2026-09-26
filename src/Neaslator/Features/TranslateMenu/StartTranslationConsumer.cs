@@ -303,6 +303,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                 {
                     MenuId = command.MenuId,
                     OwnerId = command.OwnerId,
+                    TenantId = command.TenantId,
                     SourceLanguageCode = command.SourceLanguageCode,
                     TotalLanguages = result.TotalLanguages,
                     CompletedLanguages = result.CompletedLanguages,
