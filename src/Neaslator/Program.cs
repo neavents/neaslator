@@ -26,8 +26,7 @@ builder.WebHost.UseUrls("http://0.0.0.0:5300");
 
 builder.AddNeaslatorLogging();
 
-builder.Services.AddDbContext<NeaslatorDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("NeaslatorDb")));
+builder.Services.AddNeaslatorDbContext(builder.Configuration.GetConnectionString("NeaslatorDb"));
 
 // Two routes to the same database: "NeaslatorDb" carries request traffic and is what a connection
 // pooler would sit in front of, and "PostgresDirect" is what session advisory locks are taken on —
