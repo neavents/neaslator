@@ -79,23 +79,6 @@ jobs:
         with:
           path: neaslator
 
-      # The Dockerfile restores Neavents.Messaging.Contracts from a package feed on a PERSONAL
-      # account (nuget.pkg.github.com/polatefekaya), and secrets.GITHUB_TOKEN is scoped to this
-      # repository's owner — it cannot read that feed and the restore 401s inside the build, where
-      # the error is buried in layer output.
-      #
-      # Checked before the build rather than after, so a missing secret is one clear line instead of
-      # a failed restore ten minutes in.
-      - name: Check the package feed credential
-        run: |
-          if [ -z "${{ secrets.NUGET_GITHUB_TOKEN }}" ]; then
-            echo "::error::NUGET_GITHUB_TOKEN is not set for this repository."
-            echo "The image build restores a private package from nuget.pkg.github.com/polatefekaya,"
-            echo "which secrets.GITHUB_TOKEN cannot read. Add an organisation secret named"
-            echo "NUGET_GITHUB_TOKEN holding a PAT with read:packages."
-            exit 1
-          fi
-
       # A Docker tag cannot contain '/', and every branch here has one: harden/outbox-observability,
       # feature/authorization-rbac-pdp. Left unsanitised the push is rejected by the registry at the
       # very end of the build, after the slow part has already been paid for.
@@ -145,7 +128,7 @@ jobs:
             ghcr.io/neavents/neaslator:${{ github.sha }}
           build-args: |
             GITHUB_USER=${{ github.actor }}
-            GITHUB_TOKEN=${{ secrets.NUGET_GITHUB_TOKEN }}
+            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
           # Layer cache in the registry. A .NET restore and publish is the slow part of every one of
           # these builds, and it is identical between commits that did not touch the project files.
           cache-from: type=registry,ref=ghcr.io/neavents/neaslator:buildcache
