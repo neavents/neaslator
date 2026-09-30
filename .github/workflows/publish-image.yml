@@ -128,7 +128,8 @@ jobs:
             ghcr.io/neavents/neaslator:${{ github.sha }}
           build-args: |
             GITHUB_USER=${{ github.actor }}
-            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          secrets: |
+            nuget_token=${{ secrets.GITHUB_TOKEN }}
           # Layer cache in the registry. A .NET restore and publish is the slow part of every one of
           # these builds, and it is identical between commits that did not touch the project files.
           cache-from: type=registry,ref=ghcr.io/neavents/neaslator:buildcache
