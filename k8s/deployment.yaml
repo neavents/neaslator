@@ -98,7 +98,7 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: busybox:1.36
-          command: ['sh', '-c', 'until nc -z neavents-pg-pooler-rw 5432; do echo "waiting for postgres..."; sleep 2; done; echo "postgres is up"']
+          command: ['sh', '-c', 'until nc -z neavents-pg-pooler-small 5432; do echo "waiting for postgres..."; sleep 2; done; echo "postgres is up"']
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
