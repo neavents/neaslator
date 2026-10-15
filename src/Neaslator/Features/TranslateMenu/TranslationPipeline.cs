@@ -5,6 +5,7 @@ using Neaslator.Domain.Entities;
 using Neaslator.Domain.Enums;
 using Neaslator.Infrastructure.Cache;
 using Neaslator.Infrastructure.Diff;
+using Neaslator.Infrastructure.LanguagePolicy;
 using Neaslator.Infrastructure.Providers;
 using Neaslator.Observability;
 using Neaslator.Persistence;
@@ -42,7 +43,8 @@ public sealed class TranslationPipeline
         string venueType,
         string cuisineType,
         CancellationToken cancellationToken,
-        string? targetLanguageCode = null)
+        string? targetLanguageCode = null,
+        TranslationLanguagePolicy? languagePolicy = null)
     {
         long pipelineStartTicks = Stopwatch.GetTimestamp();
 
@@ -111,8 +113,23 @@ public sealed class TranslationPipeline
                 targetLanguageCode, sourceLanguageCode);
         }
 
-        List<string> targetCodes = targetLanguages.Select(l => l.Code).ToList();
+        TranslationLanguagePolicy policy = languagePolicy ?? TranslationLanguagePolicy.Unrestricted;
+        List<string> targetCodes = targetLanguages.Select(l => l.Code).Where(policy.Permits).ToList();
         activity?.SetTag("neaslator.target_languages_count", targetCodes.Count);
+        activity?.SetTag("neaslator.languages_restricted", policy.Allowed is not null);
+
+        if (targetCodes.Count == 0)
+        {
+            activity?.SetTag("neaslator.result", "no_target_languages");
+            RecordPipelineDuration(pipelineStartTicks, 0);
+            return new TranslationPipelineResult
+            {
+                TotalLanguages = 0,
+                CompletedLanguages = 0,
+                FailedLanguages = 0,
+                Results = []
+            };
+        }
 
         Dictionary<string, List<TranslationUnit>> cacheMissesByLanguage = [];
         int l1Hits = 0;

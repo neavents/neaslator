@@ -45,6 +45,7 @@ public sealed class StartTranslationConsumerModifierTests
             .AddSingleton(hub)
             .AddScoped<TranslationNotifier>()
             .AddScoped<TranslationPipeline>()
+            .AddSingleton<Neaslator.Infrastructure.LanguagePolicy.ITranslationLanguagePolicySource>(Neaslator.Tests.Shared.FixedLanguagePolicy.Unrestricted)
             .AddMassTransitTestHarness(x =>
             {
                 x.AddConsumer<StartTranslationConsumer>();

@@ -8,6 +8,7 @@ using Neaslator.Domain.Enums;
 using Neaslator.Infrastructure.Cache;
 using Neaslator.Infrastructure.Diff;
 using Neaslator.Infrastructure.Hashing;
+using Neaslator.Infrastructure.LanguagePolicy;
 using Neaslator.Infrastructure.MenuData;
 using Neaslator.Infrastructure.Normalization;
 using Neaslator.Infrastructure.Notifications;
@@ -24,6 +25,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
     private readonly TranslationNotifier _notifier;
     private readonly IMenuDataProvider _menuDataProvider;
     private readonly ITranslationCache _cache;
+    private readonly ITranslationLanguagePolicySource _languagePolicies;
     private readonly ILogger<StartTranslationConsumer> _logger;
 
     public StartTranslationConsumer(
@@ -33,6 +35,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
         TranslationNotifier notifier,
         IMenuDataProvider menuDataProvider,
         ITranslationCache cache,
+        ITranslationLanguagePolicySource languagePolicies,
         ILogger<StartTranslationConsumer> logger)
     {
         _pipeline = pipeline;
@@ -41,6 +44,7 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
         _notifier = notifier;
         _menuDataProvider = menuDataProvider;
         _cache = cache;
+        _languagePolicies = languagePolicies;
         _logger = logger;
     }
 
@@ -116,6 +120,9 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
             activity?.SetTag("neaslator.ignore_previous_snapshot", command.IgnorePreviousSnapshot);
             activity?.SetTag("neaslator.target_language", command.TargetLanguageCode ?? "all");
 
+            TranslationLanguagePolicy languagePolicy = await _languagePolicies
+                .GetAsync(command.OwnerId, context.CancellationToken);
+
             TranslationPipelineResult result;
             using (Activity? pipelineActivity = NeaslatorActivitySources.Saga.StartActivity("execute_pipeline"))
             {
@@ -126,7 +133,8 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                     command.VenueType,
                     command.CuisineType,
                     context.CancellationToken,
-                    command.TargetLanguageCode);
+                    command.TargetLanguageCode,
+                    languagePolicy);
 
                 pipelineActivity?.SetTag("neaslator.result.total", result.TotalLanguages);
                 pipelineActivity?.SetTag("neaslator.result.completed", result.CompletedLanguages);

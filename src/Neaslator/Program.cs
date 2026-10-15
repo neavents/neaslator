@@ -106,6 +106,7 @@ builder.Services.AddMassTransit(cfg =>
     cfg.AddConsumer<MenuPublishedConsumer>();
     cfg.AddConsumer<MenuTranslationRequestedConsumer>();
     cfg.AddConsumer<StartTranslationConsumer>();
+    cfg.AddConsumer<Neaslator.Infrastructure.LanguagePolicy.TranslationLanguageSettingsChangedConsumer>();
 
     // Transactional outbox and inbox. This service had NEITHER.
     //
@@ -222,6 +223,19 @@ builder.Services.AddHttpClient<IMenuDataProvider, HttpMenuDataProvider>(client =
     string? internalKey = builder.Configuration["MenuService:InternalApiKey"];
     if (!string.IsNullOrWhiteSpace(internalKey))
         client.DefaultRequestHeaders.Add("X-Internal-Key", internalKey);
+});
+
+builder.Services.AddHttpClient<Neaslator.Infrastructure.LanguagePolicy.ITranslationLanguagePolicySource,
+    Neaslator.Infrastructure.LanguagePolicy.IdentityTranslationLanguagePolicySource>(client =>
+{
+    if (builder.Configuration["IdentityService:BaseUrl"] is { Length: > 0 } identity)
+        client.BaseAddress = new Uri(identity);
+    client.Timeout = TimeSpan.FromSeconds(5);
+
+    // identity's /internal reads X-Api-Key, not X-Internal-Key. The estate shares one internal key, so the menu-service
+    // key stands in until neaslator-secrets carries its own.
+    if ((builder.Configuration["IdentityService:InternalApiKey"] ?? builder.Configuration["MenuService:InternalApiKey"]) is { Length: > 0 } key)
+        client.DefaultRequestHeaders.Add("X-Api-Key", key);
 });
 
 // SignalR groups are per-SERVER unless a backplane says otherwise, and TranslationNotifier

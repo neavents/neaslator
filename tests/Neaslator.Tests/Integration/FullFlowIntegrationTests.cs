@@ -8,12 +8,14 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Neavents.Messaging.Contracts.Settings;
 using Neavents.Messaging.Contracts.Translation;
 using Neaslator.Domain.Entities;
 using Neaslator.Domain.Enums;
 using Neaslator.Features.TranslateMenu;
 using Neaslator.Infrastructure.Cache;
 using Neaslator.Infrastructure.Hashing;
+using Neaslator.Infrastructure.LanguagePolicy;
 using Neaslator.Infrastructure.MenuData;
 using Neaslator.Infrastructure.Normalization;
 using Neaslator.Infrastructure.Notifications;
@@ -54,6 +56,7 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
 #pragma warning restore CS0618
 
     private WireMockServer _menuService = null!;
+    private WireMockServer _identity = null!;
     private IConnectionMultiplexer _garnet = null!;
     private ServiceProvider _provider = null!;
     private ITestHarness _harness = null!;
@@ -63,6 +66,7 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
     {
         await Task.WhenAll(_postgres.StartAsync(), _redis.StartAsync());
         _menuService = WireMockServer.Start();
+        _identity = WireMockServer.Start();
 
         string redisConnString = $"{_redis.Hostname}:{_redis.GetMappedPublicPort(6379)},abortConnect=false";
         _garnet = await ConnectionMultiplexer.ConnectAsync(redisConnString);
@@ -79,6 +83,11 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
             sp.GetRequiredService<ILogger<TranslationRouter>>()));
         services.AddScoped<TranslationPipeline>();
         services.AddHttpClient<IMenuDataProvider, HttpMenuDataProvider>(c => c.BaseAddress = new Uri(_menuService.Url!));
+        services.AddHttpClient<ITranslationLanguagePolicySource, IdentityTranslationLanguagePolicySource>(c =>
+        {
+            c.BaseAddress = new Uri(_identity.Url!);
+            c.DefaultRequestHeaders.Add("X-Api-Key", "identity-test-key");
+        });
 
         IHubContext<TranslationHub> hub = Substitute.For<IHubContext<TranslationHub>>();
         IHubClients clients = Substitute.For<IHubClients>();
@@ -90,6 +99,7 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         services.AddMassTransitTestHarness(x =>
         {
             x.AddConsumer<StartTranslationConsumer>();
+            x.AddConsumer<TranslationLanguageSettingsChangedConsumer>();
             x.UsingInMemory((context, cfg) => cfg.ConfigureEndpoints(context));
         });
 
@@ -120,6 +130,7 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         if (_provider is not null)
             await _provider.DisposeAsync();   // disposes the registered IConnectionMultiplexer
         _menuService?.Stop();
+        _identity?.Stop();
         await Task.WhenAll(_postgres.DisposeAsync().AsTask(), _redis.DisposeAsync().AsTask());
     }
 
@@ -418,6 +429,162 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         MenuPublishSnapshot snapshot = await db.MenuPublishSnapshots.SingleAsync(s => s.MenuId == menuId);
         snapshot.TenantId.Should().Be(tenantId);
         snapshot.SnapshotJson.Should().Contain(renamed).And.NotContain(oatName + "\"");
+    }
+
+    private void StubTranslationLanguages(Ulid ownerId, Ulid orgId, string[]? languages)
+    {
+        _identity
+            .Given(WireMockRequest.Create()
+                .WithPath($"/internal/v1/owners/{ownerId}/menu-defaults")
+                .WithHeader("X-Api-Key", "identity-test-key")
+                .UsingGet())
+            .RespondWith(WireMockResponse.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody(JsonSerializer.Serialize(new
+                {
+                    orgId = orgId.ToString(),
+                    currency = "TRY",
+                    language = "en",
+                    timezone = "Europe/Istanbul",
+                    translationLanguages = languages,
+                })));
+    }
+
+    private int IdentityCallsFor(Ulid ownerId) =>
+        _identity.LogEntries.Count(e => e.RequestMessage?.Path == $"/internal/v1/owners/{ownerId}/menu-defaults");
+
+    private async Task<MenuTranslationCompletedEvent> TranslateAsync(Ulid menuId, Ulid ownerId, Ulid tenantId, bool everything = true)
+    {
+        int before = _harness.Published.Select<MenuTranslationCompletedEvent>().Count(m => m.Context.Message.MenuId == menuId);
+        await _harness.Bus.Publish(new StartTranslationCommand
+        {
+            MenuId = menuId,
+            OwnerId = ownerId,
+            TenantId = tenantId,
+            SourceLanguageCode = "en",
+            VenueType = "Cafe",
+            CuisineType = "Coffee",
+            TriggeredAt = DateTimeOffset.UtcNow,
+            IgnorePreviousSnapshot = everything,
+        });
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+        while (_harness.Published.Select<MenuTranslationCompletedEvent>().Count(m => m.Context.Message.MenuId == menuId) <= before)
+        {
+            string faults = string.Join("; ", _harness.Published.Select<Fault<StartTranslationCommand>>()
+                .SelectMany(f => f.Context.Message.Exceptions).Select(e => e.Message));
+            faults.Should().BeEmpty();
+            DateTime.UtcNow.Should().BeBefore(deadline, "the saga should publish a completion event for this run");
+            await Task.Delay(100);
+        }
+
+        return _harness.Published.Select<MenuTranslationCompletedEvent>().Select(m => m.Context.Message).Last(m => m.MenuId == menuId);
+    }
+
+    private (Ulid Menu, Ulid Owner, Ulid Org, string Tail) PolicyMenu(string[]? languages)
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid orgId = Ulid.NewUlid();
+        string tail = Ulid.NewUlid().ToString()[^6..];
+        StubMenuWithModifiers(menuId, ownerId, orgId, [ModifierGroup(Ulid.NewUlid(), $"Milk {tail}", [ModifierOption(Ulid.NewUlid(), $"Oat {tail}")])]);
+        StubTranslationLanguages(ownerId, orgId, languages);
+        return (menuId, ownerId, orgId, tail);
+    }
+
+    [Fact]
+    public async Task An_organisation_restricted_to_its_source_language_never_calls_the_provider()
+    {
+        (Ulid menuId, Ulid ownerId, Ulid orgId, string tail) = PolicyMenu(["en"]);
+        int calls = _echo.CallCount;
+
+        MenuTranslationCompletedEvent completed = await TranslateAsync(menuId, ownerId, orgId);
+
+        _echo.CallCount.Should().Be(calls, "no target language is left once the source is excluded");
+        completed.TotalLanguages.Should().Be(0);
+        completed.TranslatedMenus.Should().BeEmpty();
+        await using NeaslatorDbContext db = NewContext();
+        (await db.TranslationMemory.CountAsync(m => m.NormalizedSourceText.Contains(tail))).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task An_empty_list_translates_nothing()
+    {
+        (Ulid menuId, Ulid ownerId, Ulid orgId, _) = PolicyMenu([]);
+        int calls = _echo.CallCount;
+
+        (await TranslateAsync(menuId, ownerId, orgId)).TotalLanguages.Should().Be(0);
+
+        _echo.CallCount.Should().Be(calls);
+    }
+
+    [Fact]
+    public async Task A_restricted_organisation_gets_exactly_its_languages_and_the_answer_is_cached_until_identity_says_it_changed()
+    {
+        (Ulid menuId, Ulid ownerId, Ulid orgId, string tail) = PolicyMenu(["de", "it"]);
+        int calls = _echo.CallCount;
+
+        MenuTranslationCompletedEvent first = await TranslateAsync(menuId, ownerId, orgId);
+
+        first.TranslatedMenus.Select(l => l.LanguageCode).Should().Equal("de");
+        first.TotalLanguages.Should().Be(1, "it is not an active language here, and fr was not chosen");
+        _echo.CallCount.Should().Be(calls + 1, "one batch, for German only");
+        IdentityCallsFor(ownerId).Should().Be(1);
+
+        await TranslateAsync(menuId, ownerId, orgId);
+        IdentityCallsFor(ownerId).Should().Be(1, "the second run reads the cached answer");
+
+        StubTranslationLanguages(ownerId, orgId, null);
+        await _harness.Bus.Publish(new SettingsChanged
+        {
+            OrgId = orgId,
+            OwningService = "identity",
+            Keys = [TranslationLanguageSettingsChangedConsumer.SettingKey],
+            Level = "org",
+            ScopeId = orgId,
+            Change = SettingsChanged.ValueChanged,
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+        DateTime settled = DateTime.UtcNow.AddSeconds(30);
+        while (!_harness.Consumed.Select<SettingsChanged>().Any(c => c.Context.Message.OrgId == orgId))
+        {
+            DateTime.UtcNow.Should().BeBefore(settled, "the settings change should be consumed");
+            await Task.Delay(100);
+        }
+
+        MenuTranslationCompletedEvent widened = await TranslateAsync(menuId, ownerId, orgId);
+        IdentityCallsFor(ownerId).Should().Be(2);
+        widened.TranslatedMenus.Select(l => l.LanguageCode).Should().BeEquivalentTo(["fr", "de"]);
+        await using NeaslatorDbContext db = NewContext();
+        (await db.TranslationMemory.CountAsync(m => m.NormalizedSourceText.Contains(tail))).Should().Be(2 * 2);
+    }
+
+    [Fact]
+    public async Task An_identity_that_cannot_answer_fails_the_run_instead_of_translating_everything()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid orgId = Ulid.NewUlid();
+        StubMenuWithModifiers(menuId, ownerId, orgId, []);
+        _identity
+            .Given(WireMockRequest.Create().WithPath($"/internal/v1/owners/{ownerId}/menu-defaults").UsingGet())
+            .RespondWith(WireMockResponse.Create().WithStatusCode(503));
+        int calls = _echo.CallCount;
+
+        await _harness.Bus.Publish(new StartTranslationCommand
+        {
+            MenuId = menuId, OwnerId = ownerId, TenantId = orgId, SourceLanguageCode = "en",
+            VenueType = "Cafe", CuisineType = "Coffee", TriggeredAt = DateTimeOffset.UtcNow, IgnorePreviousSnapshot = true,
+        });
+
+        DateTime faulted = DateTime.UtcNow.AddSeconds(30);
+        while (!_harness.Published.Select<Fault<StartTranslationCommand>>().Any(f => f.Context.Message.Message.MenuId == menuId))
+        {
+            DateTime.UtcNow.Should().BeBefore(faulted, "a run identity cannot answer for should fault");
+            await Task.Delay(100);
+        }
+        _echo.CallCount.Should().Be(calls);
+        _harness.Published.Select<MenuTranslationCompletedEvent>().Should().NotContain(m => m.Context.Message.MenuId == menuId);
     }
 
     private NeaslatorDbContext NewContext()
