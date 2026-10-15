@@ -24,6 +24,28 @@ public sealed record MenuSnapshot
     public bool DoNotTranslateDescription { get; init; }
 
     public required IReadOnlyList<SectionSnapshot> Sections { get; init; }
+
+    /// <summary>The menu's modifier groups; empty on a snapshot stored before modifiers were translated, so the next run translates them all.</summary>
+    public IReadOnlyList<ModifierGroupSnapshot> ModifierGroups { get; init; } = [];
+}
+
+public sealed record ModifierGroupSnapshot
+{
+    public required Ulid Id { get; init; }
+    public required string Name { get; init; }
+    public IReadOnlyList<ModifierOptionSnapshot> Options { get; init; } = [];
+
+    /// <summary>Names a person wrote in menu-service, by language; they travel instead of the translator's.</summary>
+    public IReadOnlyDictionary<string, string>? HumanNames { get; init; }
+}
+
+public sealed record ModifierOptionSnapshot
+{
+    public required Ulid Id { get; init; }
+    public required string Name { get; init; }
+
+    /// <inheritdoc cref="ModifierGroupSnapshot.HumanNames"/>
+    public IReadOnlyDictionary<string, string>? HumanNames { get; init; }
 }
 
 public sealed record SectionSnapshot

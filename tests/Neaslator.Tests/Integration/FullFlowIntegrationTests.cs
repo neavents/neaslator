@@ -297,6 +297,129 @@ public sealed class FullFlowIntegrationTests : IAsyncLifetime
         }
     }
 
+    private void StubMenuWithModifiers(Ulid menuId, Ulid ownerId, Ulid tenantId, object[] modifierGroups)
+    {
+        string json = JsonSerializer.Serialize(new
+        {
+            smartMenuDto = new
+            {
+                smartMenuId = menuId.ToString(),
+                name = "Kahve",
+                sections = Array.Empty<object>(),
+                modifierGroups,
+            },
+            detailsDto = new { },
+        });
+
+        _menuService
+            .Given(WireMockRequest.Create()
+                .WithPath($"/api/v1/editor/smartmenu/{menuId}")
+                .WithHeader("X-Venue-Id", ownerId.ToString())
+                .WithHeader("X-Tenant-Id", tenantId.ToString())
+                .UsingGet())
+            .RespondWith(WireMockResponse.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody(json));
+    }
+
+    private static object ModifierGroup(Ulid id, string name, object[] options, string[]? human = null, Dictionary<string, string>? names = null)
+        => new { id = id.ToString(), name, min = 0, max = 1, required = false, displayOrder = 0, nameTranslations = names, humanEditedLanguages = human, options };
+
+    private static object ModifierOption(Ulid id, string name, string[]? human = null, Dictionary<string, string>? names = null)
+        => new { id = id.ToString(), name, priceDelta = new { amount = 10m, currency = new { code = "TRY" } }, availability = "Active", displayOrder = 0, nameTranslations = names, humanEditedLanguages = human };
+
+    private async Task<MenuTranslationCompletedEvent> RunSagaFor(
+        Ulid menuId, Ulid ownerId, Ulid tenantId, Func<MenuTranslationCompletedEvent, bool> isThisRun)
+    {
+        StartTranslationCommand command = new()
+        {
+            MenuId = menuId,
+            OwnerId = ownerId,
+            TenantId = tenantId,
+            SourceLanguageCode = "en",
+            VenueType = "Cafe",
+            CuisineType = "Coffee",
+            TriggeredAt = DateTimeOffset.UtcNow,
+        };
+        await _harness.Bus.Publish(command);
+
+        bool Matches(MenuTranslationCompletedEvent m) => m.MenuId == menuId && isThisRun(m);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(60);
+        while (!_harness.Published.Select<MenuTranslationCompletedEvent>().Any(m => Matches(m.Context.Message)))
+        {
+            string faults = string.Join("; ", _harness.Published.Select<Fault<StartTranslationCommand>>()
+                .SelectMany(f => f.Context.Message.Exceptions).Select(e => e.Message));
+            faults.Should().BeEmpty();
+            DateTime.UtcNow.Should().BeBefore(deadline, "the saga should publish a completion event for this run");
+            await Task.Delay(100);
+        }
+
+        return _harness.Published.Select<MenuTranslationCompletedEvent>().Select(m => m.Context.Message).Last(Matches);
+    }
+
+    private static string? OptionName(MenuTranslationCompletedEvent completed, string language, Ulid optionId)
+        => completed.TranslatedMenus.SingleOrDefault(l => l.LanguageCode == language)?
+            .ModifierGroups?.SelectMany(g => g.Options).SingleOrDefault(o => o.OptionId == optionId)?.TranslatedName;
+
+    [Fact]
+    public async Task A_menu_with_modifiers_is_translated_end_to_end_and_a_renamed_option_is_the_only_new_work()
+    {
+        Ulid menuId = Ulid.NewUlid();
+        Ulid ownerId = Ulid.NewUlid();
+        Ulid tenantId = Ulid.NewUlid();
+        Ulid milk = Ulid.NewUlid();
+        Ulid oat = Ulid.NewUlid();
+        Ulid soy = Ulid.NewUlid();
+        string tail = Ulid.NewUlid().ToString()[^6..];
+        string milkName = $"Milk {tail}";
+        string oatName = $"Oat {tail}";
+        string soyName = $"Soy {tail}";
+
+        StubMenuWithModifiers(menuId, ownerId, tenantId,
+        [
+            ModifierGroup(milk, milkName,
+                [ModifierOption(oat, oatName, human: ["de"], names: new() { ["de"] = "Hafer von Hand" }), ModifierOption(soy, soyName)]),
+        ]);
+
+        int callsBefore = _echo.CallCount;
+        MenuTranslationCompletedEvent first = await RunSagaFor(menuId, ownerId, tenantId, m => OptionName(m, "fr", soy) is not null);
+
+        first.TenantId.Should().Be(tenantId);
+        foreach (string language in new[] { "fr", "de" })
+        {
+            TranslatedModifierGroupData group = first.TranslatedMenus.Single(l => l.LanguageCode == language).ModifierGroups!.Single();
+            group.GroupId.Should().Be(milk);
+            group.TranslatedName.Should().Be($"[{language}] {milkName}");
+            group.Options.Single(o => o.OptionId == soy).TranslatedName.Should().Be($"[{language}] {soyName}");
+        }
+
+        first.TranslatedMenus.Single(l => l.LanguageCode == "fr").ModifierGroups!.Single().Options.Single(o => o.OptionId == oat)
+            .TranslatedName.Should().Be($"[fr] {oatName}");
+        first.TranslatedMenus.Single(l => l.LanguageCode == "de").ModifierGroups!.Single().Options.Single(o => o.OptionId == oat)
+            .TranslatedName.Should().Be("Hafer von Hand", "a name a person wrote travels instead of the translator's");
+        _echo.CallCount.Should().BeGreaterThan(callsBefore);
+
+        string renamed = $"Oat milk {tail}";
+        _menuService.Reset();
+        StubMenuWithModifiers(menuId, ownerId, tenantId,
+            [ModifierGroup(milk, milkName, [ModifierOption(oat, renamed), ModifierOption(soy, soyName)])]);
+        int callsAfterFirst = _echo.CallCount;
+
+        MenuTranslationCompletedEvent second = await RunSagaFor(menuId, ownerId, tenantId, m => OptionName(m, "de", oat) == $"[de] {renamed}");
+
+        second.TranslatedMenus.Single(l => l.LanguageCode == "de").ModifierGroups!.Single().Options.Single(o => o.OptionId == oat)
+            .TranslatedName.Should().Be($"[de] {renamed}");
+        second.TranslatedMenus.Single(l => l.LanguageCode == "fr").ModifierGroups!.Single().TranslatedName.Should().Be($"[fr] {milkName}");
+        _echo.CallCount.Should().Be(callsAfterFirst + 2, "only the renamed option is new, once per language");
+
+        await using NeaslatorDbContext db = NewContext();
+        (await db.TranslationMemory.CountAsync(m => m.NormalizedSourceText.Contains(tail))).Should().Be(4 * 2,
+            "three names in the first run and the renamed option in the second, in two languages each");
+        MenuPublishSnapshot snapshot = await db.MenuPublishSnapshots.SingleAsync(s => s.MenuId == menuId);
+        snapshot.TenantId.Should().Be(tenantId);
+        snapshot.SnapshotJson.Should().Contain(renamed).And.NotContain(oatName + "\"");
+    }
+
     private NeaslatorDbContext NewContext()
     {
         DbContextOptions<NeaslatorDbContext> options = new DbContextOptionsBuilder<NeaslatorDbContext>()

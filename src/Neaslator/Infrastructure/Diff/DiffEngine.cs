@@ -26,6 +26,7 @@ public static class DiffEngine
         // Name, so the first run after this change sees "" -> "Mezeler" and translates it, which is
         // exactly the backfill every existing menu needs.
         AddMenuUnits(units, currentSnapshot, previousSnapshot);
+        AddModifierUnits(units, currentSnapshot, previousSnapshot);
 
         if (previousSnapshot is null)
         {
@@ -180,6 +181,47 @@ public static class DiffEngine
                 });
             }
         }
+    }
+
+    /// <summary>Emits a unit for every modifier group or option name that is new or changed since the previous snapshot.</summary>
+    /// <remarks>
+    /// Keyed by id, so renaming "Süt" to "Krema" is one unit and reordering is none. A previous snapshot stored before
+    /// modifiers were read has no groups, which makes every name new: the backfill existing menus need.
+    /// </remarks>
+    private static void AddModifierUnits(List<TranslationUnit> units, MenuSnapshot current, MenuSnapshot? previous)
+    {
+        Dictionary<Ulid, ModifierGroupSnapshot> previousGroups = (previous?.ModifierGroups ?? []).ToDictionary(g => g.Id);
+
+        foreach (ModifierGroupSnapshot group in current.ModifierGroups)
+        {
+            previousGroups.TryGetValue(group.Id, out ModifierGroupSnapshot? previousGroup);
+            AddModifierUnitIfChanged(units, group.Name, previousGroup?.Name, TranslationUnitType.ModifierGroupName, group.Id);
+
+            Dictionary<Ulid, ModifierOptionSnapshot> previousOptions = (previousGroup?.Options ?? []).ToDictionary(o => o.Id);
+            foreach (ModifierOptionSnapshot option in group.Options)
+            {
+                previousOptions.TryGetValue(option.Id, out ModifierOptionSnapshot? previousOption);
+                AddModifierUnitIfChanged(units, option.Name, previousOption?.Name, TranslationUnitType.ModifierOptionName, option.Id);
+            }
+        }
+    }
+
+    private static void AddModifierUnitIfChanged(
+        List<TranslationUnit> units, string name, string? previousName, TranslationUnitType type, Ulid id)
+    {
+        string normalized = TextNormalizer.Normalize(name);
+        if (normalized.Length == 0
+            || normalized.Equals(TextNormalizer.Normalize(previousName ?? ""), StringComparison.Ordinal))
+            return;
+
+        units.Add(new TranslationUnit
+        {
+            SourceHash = TranslationHasher.ComputeHash(normalized),
+            NormalizedSourceText = normalized,
+            UnitType = type,
+            ParentSectionId = Ulid.Empty,
+            ItemId = id
+        });
     }
 
     private static void AddSectionUnit(List<TranslationUnit> units, SectionSnapshot section)

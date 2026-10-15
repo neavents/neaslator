@@ -88,7 +88,39 @@ public sealed class HttpMenuDataProvider : IMenuDataProvider
                         DoNotTranslateDescription = si.DoNotTranslateDescription
                     }).ToList()
                 }).ToList()
-            }).ToList()
+            }).ToList(),
+            ModifierGroups = (menuData.ModifierGroups ?? [])
+                .Where(g => !string.IsNullOrWhiteSpace(g.Name))
+                .Select(g => new ModifierGroupSnapshot
+                {
+                    Id = g.Id,
+                    Name = g.Name,
+                    HumanNames = HumanNames(g.NameTranslations, g.HumanEditedLanguages),
+                    Options = (g.Options ?? [])
+                        .Where(o => !string.IsNullOrWhiteSpace(o.Name))
+                        .Select(o => new ModifierOptionSnapshot
+                        {
+                            Id = o.Id,
+                            Name = o.Name,
+                            HumanNames = HumanNames(o.NameTranslations, o.HumanEditedLanguages),
+                        }).ToList(),
+                }).ToList(),
         };
+    }
+
+    private static Dictionary<string, string>? HumanNames(
+        IReadOnlyDictionary<string, string>? translations, IReadOnlyList<string>? humanEdited)
+    {
+        if (translations is null || humanEdited is not { Count: > 0 })
+            return null;
+
+        Dictionary<string, string> names = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string language in humanEdited)
+        {
+            if (translations.TryGetValue(language, out string? name) && !string.IsNullOrWhiteSpace(name))
+                names[language] = name;
+        }
+
+        return names.Count == 0 ? null : names;
     }
 }

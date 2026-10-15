@@ -290,6 +290,9 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
                         TranslatedName = translatedMenuName,
                         TranslatedDescription = translatedMenuDescription,
                         Sections = translatedSections,
+                        ModifierGroups = await AssembleModifierGroupsAsync(
+                            currentSnapshot.ModifierGroups, command.SourceLanguageCode,
+                            langResult.TargetLanguageCode, context.CancellationToken),
                     });
                 }
                 assembleActivity?.SetTag("neaslator.assembled_languages", translatedMenus.Count);
@@ -386,6 +389,51 @@ public sealed class StartTranslationConsumer : IConsumer<StartTranslationCommand
 
             throw;
         }
+    }
+
+    /// <summary>Every modifier group and option name in one language.</summary>
+    /// <remarks>
+    /// A name a person wrote in menu-service travels instead of the translator's, so qrmenu-edge, which publishes
+    /// this event as it stands, shows diners the correction rather than replacing it until the next publish.
+    /// A miss is null, never the source text, for the reason <see cref="LookupOrNullAsync"/> gives.
+    /// </remarks>
+    private async Task<IReadOnlyList<TranslatedModifierGroupData>> AssembleModifierGroupsAsync(
+        IReadOnlyList<ModifierGroupSnapshot> groups,
+        string sourceLanguageCode,
+        string targetLanguageCode,
+        CancellationToken cancellationToken)
+    {
+        List<TranslatedModifierGroupData> translated = new(groups.Count);
+        foreach (ModifierGroupSnapshot group in groups)
+        {
+            List<TranslatedModifierOptionData> options = new(group.Options.Count);
+            foreach (ModifierOptionSnapshot option in group.Options)
+            {
+                options.Add(new TranslatedModifierOptionData
+                {
+                    OptionId = option.Id,
+                    TranslatedName = HumanNameIn(option.HumanNames, targetLanguageCode)
+                        ?? await LookupOrNullAsync(option.Name, sourceLanguageCode, targetLanguageCode, cancellationToken),
+                });
+            }
+
+            translated.Add(new TranslatedModifierGroupData
+            {
+                GroupId = group.Id,
+                TranslatedName = HumanNameIn(group.HumanNames, targetLanguageCode)
+                    ?? await LookupOrNullAsync(group.Name, sourceLanguageCode, targetLanguageCode, cancellationToken),
+                Options = options,
+            });
+        }
+
+        return translated;
+    }
+
+    private static string? HumanNameIn(IReadOnlyDictionary<string, string>? names, string languageCode)
+    {
+        if (names is null) return null;
+        if (names.TryGetValue(languageCode, out string? exact)) return exact;
+        return names.FirstOrDefault(n => string.Equals(n.Key, languageCode, StringComparison.OrdinalIgnoreCase)).Value;
     }
 
     /// <summary>

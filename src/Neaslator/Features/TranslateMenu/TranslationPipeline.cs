@@ -67,6 +67,7 @@ public sealed class TranslationPipeline
             diffActivity?.SetTag("neaslator.diff.section_names_changed", changedUnits.Count(u => u.UnitType == TranslationUnitType.SectionName));
             diffActivity?.SetTag("neaslator.diff.item_names_changed", changedUnits.Count(u => u.UnitType == TranslationUnitType.ItemName));
             diffActivity?.SetTag("neaslator.diff.item_descriptions_changed", changedUnits.Count(u => u.UnitType == TranslationUnitType.ItemDescription));
+            diffActivity?.SetTag("neaslator.diff.modifier_names_changed", changedUnits.Count(u => u.UnitType is TranslationUnitType.ModifierGroupName or TranslationUnitType.ModifierOptionName));
         }
 
         NeaslatorMetrics.PipelineDiffChangedUnits.Add(changedUnits.Count);

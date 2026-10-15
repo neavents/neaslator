@@ -35,6 +35,42 @@ internal sealed record MenuServiceResponse
 
     [JsonPropertyName("sections")]
     public IReadOnlyList<MenuSectionResponse> Sections { get; init; } = [];
+
+    [JsonPropertyName("modifierGroups")]
+    public IReadOnlyList<ModifierGroupResponse>? ModifierGroups { get; init; }
+}
+
+internal sealed record ModifierGroupResponse
+{
+    [JsonPropertyName("id")]
+    public Ulid Id { get; init; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    [JsonPropertyName("nameTranslations")]
+    public IReadOnlyDictionary<string, string>? NameTranslations { get; init; }
+
+    [JsonPropertyName("humanEditedLanguages")]
+    public IReadOnlyList<string>? HumanEditedLanguages { get; init; }
+
+    [JsonPropertyName("options")]
+    public IReadOnlyList<ModifierOptionResponse>? Options { get; init; }
+}
+
+internal sealed record ModifierOptionResponse
+{
+    [JsonPropertyName("id")]
+    public Ulid Id { get; init; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
+
+    [JsonPropertyName("nameTranslations")]
+    public IReadOnlyDictionary<string, string>? NameTranslations { get; init; }
+
+    [JsonPropertyName("humanEditedLanguages")]
+    public IReadOnlyList<string>? HumanEditedLanguages { get; init; }
 }
 
 internal sealed record MenuSectionResponse
